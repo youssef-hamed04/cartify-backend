@@ -15,6 +15,15 @@ export const verificationSchema = new Schema(
       labels: [{ _id: false, label: String, score: Number }],
     },
 
+    // Box photo vs. the catalog photos of the returned variant (and of other products/colours)
+    photo: {
+      score: { type: Number, default: null },        // 0–1 share for the returned variant's photos
+      passed: { type: Boolean, default: null },      // null = no catalog photos to compare with
+      similarity: { type: Number, default: null },   // cosine similarity to the closest returned-variant photo
+      closest: { type: String, default: null },      // catalog item the box photo looks most like
+      compared: { type: Number, default: null },     // how many catalog items were compared
+    },
+
     weight: {
       measured: { type: Number, default: null },     // grams, from the box
       expected: { type: Number, default: null },     // grams, from product variants × quantity

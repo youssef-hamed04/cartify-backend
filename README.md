@@ -45,6 +45,7 @@ npm start                # production
 | PATCH | `/products/bulk-brand` | Admin | Bulk update by brand |
 | PATCH | `/products/bulk-category` | Admin | Bulk update by category |
 | PATCH | `/products/:id` | Admin | Update (multipart) |
+| PATCH | `/products/:id/weights` | Admin | Set variant weights in grams (SmartBox check) |
 | DELETE | `/products/:id` | Admin | Delete |
 
 **Query params for `GET /products`:**
@@ -404,23 +405,36 @@ mosquitto_pub -h localhost \
 Every photo the box camera sends to `POST /camera/upload` is checked automatically:
 
 1. **Weight**: the box reading (`X-Weight` header, grams) is compared with the returned
-   variants' `weight` × quantity (tolerance ±20 %, at least ±25 g). Set each variant's weight
-   in grams via `PATCH /products/:id` (`variantsMeta[].weight`).
-2. **Image**: [CLIP](https://huggingface.co/Xenova/clip-vit-base-patch32) (open-source, via
-   `@huggingface/transformers`) scores the photo against the returned product's name and
-   distractors (products from other categories, "an empty box"…). Score ≥ 0.5 passes.
+   variants' `weight` × quantity (tolerance ±20 %, at least ±25 g). Admins set each colour's
+   weight in the **Box weight** column of the admin Products page
+   (`PATCH /products/:id/weights` with `{ "weights": { "<color>": grams } }`).
+2. **Photo match**: [CLIP](https://huggingface.co/Xenova/clip-vit-base-patch32) turns the box
+   photo and the catalog photos into embeddings. The photo is compared with the returned
+   variant's photos, the product's other colours, and 15 other products (same category first).
+   It passes when the returned variant gets ≥ 50 % of the match and similarity is ≥ 0.7.
+   Catalog embeddings are computed at startup and when a product is saved, and cached in the
+   `imageembeddings` collection, so a drop-off only encodes the box photo.
+3. **Label check**: CLIP also scores the photo against the product's name and generic
+   distractors ("an empty box", "a person's hand"…). It is the image check when a product has
+   no working catalog photo, and it flags an empty box unless the photo match is clear (≥ 0.75).
 
 The verdict (`match` / `review` / `error`) is saved on the camera session and the return
 (`verification`), shown in the admin **Camera Sessions** page and in the mobile app. It is
 advisory: an admin still decides on the refund. Re-run a check with
 `POST /camera/session/:id/verify` (admin), e.g. after setting product weights.
 
-- No API key and no per-call cost. The model (~150 MB) downloads once into `.cache/models`.
+Tested on 39 catalog products with photos degraded to look like the box camera (640×480, tilted,
+dark, blurred, JPEG q50): right item 37/39 (two near-identical dark headphones went to review),
+wrong item 38/39 (the miss: two products share the same seed photo), empty box 39/39.
+
+- No API key and no per-call cost. The model (~240 MB) downloads once into `.cache/models`.
   After that a check takes well under a second on a laptop CPU.
 - Needs a normal Node server (not serverless: model size and cold start).
 - `AI_VERIFY=off` disables it.
 - It recognises **which** item is in the box, not whether it is damaged. Thresholds should be
-  tuned with real photos from the ESP32-CAM.
+  re-tuned with real photos from the ESP32-CAM.
+- Some seed products point to Unsplash photos that no longer exist (404). Those products fall
+  back to the label check until they get a real photo.
 
 ---
 

@@ -18,7 +18,8 @@ router.use(protectRoute, adminOnly);
 router.patch('/bulk-brand',    PC.bulkUpdateByBrand);
 router.patch('/bulk-category', PC.bulkUpdateByCategory);
 router.post('/',  upload.any(), productRules, validate, PC.createProduct);
-router.patch('/:id', ...mongoIdParam('id'), validate, upload.any(), PC.updateProduct);
+router.patch('/:id/weights', ...mongoIdParam('id'), validate, PC.updateVariantWeights);
+router.patch('/:id',...mongoIdParam('id'), validate, upload.any(), PC.updateProduct);
 router.delete('/:id', ...mongoIdParam('id'), validate, PC.deleteProduct);
 
 export default router;

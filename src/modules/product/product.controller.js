@@ -3,6 +3,7 @@ import reviewModel from '../../../db/models/review.model.js';
 import connectToDB from '../../../db/connectionDB.js';
 import { AppError, asyncHandler } from '../../utils/error.js';
 import { sendSuccess } from '../../utils/response.js';
+import { indexProductImages } from '../../utils/returnVerification.js';
 import { uploadToCloudinary, deleteFromCloudinary } from '../../utils/cloudinary.js';
 import { slugify } from '../../utils/slug.js';
 
@@ -68,7 +69,27 @@ export const createProduct = asyncHandler(async (req, res, next) => {
   let slug = slugify(name);
   if (await productModel.findOne({ slug })) slug = `${slug}-${Date.now()}`;
   const product = await productModel.create({ name, slug, price, description, category, brand, discount: discount || 0, raise: raise || 0, variants });
+  indexProductImages(product).catch(() => {}); // SmartBox photo match, in the background
   sendSuccess(res, 201, 'success', { product });
+});
+
+// PATCH /products/:id/weights  { weights: { "<color>": grams | null } }
+// Sets only the variants' SmartBox weights; images, stock and the rest stay untouched.
+export const updateVariantWeights = asyncHandler(async (req, res, next) => {
+  await connectToDB();
+  const { weights } = req.body;
+  if (!weights || typeof weights !== 'object' || Array.isArray(weights)) return next(new AppError('weights must be an object of color → grams', 400));
+  const product = await productModel.findById(req.params.id);
+  if (!product) return next(new AppError('Product not found', 404));
+  for (const [color, value] of Object.entries(weights)) {
+    const variant = product.variants.find((v) => v.color === color);
+    if (!variant) return next(new AppError(`No "${color}" variant on this product`, 400));
+    const grams = value === null || value === '' ? null : Number(value);
+    if (grams !== null && (!Number.isFinite(grams) || grams <= 0 || grams > 100000)) return next(new AppError(`Invalid weight for "${color}"`, 400));
+    variant.weight = grams;
+  }
+  await product.save();
+  sendSuccess(res, 200, 'success', { product });
 });
 
 export const updateProduct = asyncHandler(async (req, res, next) => {
@@ -91,6 +112,7 @@ export const updateProduct = asyncHandler(async (req, res, next) => {
   if (hide !== undefined) product.hide = hide === 'true' || hide === true;
   if (isFeatured !== undefined) product.isFeatured = isFeatured === 'true' || isFeatured === true;
   await product.save();
+  indexProductImages(product).catch(() => {});
   sendSuccess(res, 200, 'success', { product });
 });
 
