@@ -11,3 +11,13 @@ export const imageUploadLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+// /users/otp/request — max 5 codes per email+IP every 15 minutes
+export const otpRequestLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  keyGenerator: (req) => `${req.ip}:${String(req.body?.email || '').toLowerCase()}`,
+  message: { msg: 'error', err: 'Too many code requests. Please wait a few minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});

@@ -8,10 +8,29 @@ import orderModel from '../../../db/models/order.model.js';
 /** Return requests are valid for 48 hours */
 const CODE_TTL_MS = 48 * 60 * 60 * 1000;
 
+// Flag every returned line (same product + color) on the order, not only the first item
+const markRefundRequested = (order, items) => {
+  order.products.forEach((product) => {
+    if (items.some((i) => i.productId.toString() === product.productId.toString() && (!i.color || i.color === product.color))) {
+      product.isRefundRequested = true;
+    }
+  });
+};
+
 // ── POST /returns ─────────────────────────────────────────────────────────────
-export const createReturn = asyncHandler(async (req, res) => {
+export const createReturn = asyncHandler(async (req, res, next) => {
   await connectToDB();
   const { orderId, reason, notes, items } = req.body;
+
+  // Only the order's owner (account or guest session) may open a return on it
+  if (orderId && req.user?.role !== 'admin') {
+    const order = await orderModel.findById(orderId).select('userId sessionId');
+    if (!order) return next(new AppError('Order not found', 404));
+    const isOwner =
+      (req.user && order.userId?.toString() === req.user._id.toString()) ||
+      (req.sessionId && order.sessionId === req.sessionId);
+    if (!isOwner) return next(new AppError('Access denied', 403));
+  }
 
   // Generate a unique 6-digit lockerUserId — retry once on the rare collision
   let lockerUserId = generateLockerUserId();
@@ -35,11 +54,7 @@ export const createReturn = asyncHandler(async (req, res) => {
     const ord = await orderModel.findById(orderId);
 
     if (ord) {
-      ord.products.forEach(product => {
-        if (product.productId.toString() === items[0].productId.toString()) {
-          product.isRefundRequested = true;
-        }
-      });
+      markRefundRequested(ord, items);
       await ord.save();
     }
     return sendSuccess(res, 200, 'already exists', {
@@ -70,11 +85,7 @@ export const createReturn = asyncHandler(async (req, res) => {
   const ord = await orderModel.findById(orderId);
 
   if (ord) {
-    ord.products.forEach(product => {
-      if (product.productId.toString() === items[0].productId.toString()) {
-        product.isRefundRequested = true;
-      }
-    });
+    markRefundRequested(ord, items);
     await ord.save();
   }
 
@@ -183,7 +194,11 @@ export const validateReturnCode = asyncHandler(async (req, res, next) => {
     return next(new AppError('lockerUserId and unlockCode are required', 400));
   }
 
-  const returnRequest = await returnModel.findOne({ lockerUserId });
+  // lockerUserId is only 3 digits, so prefer the newest pending request
+  const byId = { lockerUserId: String(lockerUserId) };
+  const returnRequest =
+    (await returnModel.findOne({ ...byId, status: 'pending' }).sort({ createdAt: -1 })) ||
+    (await returnModel.findOne(byId).sort({ createdAt: -1 }));
   if (!returnRequest) return sendSuccess(res, 200, 'success', { action: 'deny' });
   if (new Date() > returnRequest.expiresAt) return sendSuccess(res, 200, 'success', { action: 'expired' });
   if (returnRequest.status !== 'pending') return sendSuccess(res, 200, 'success', { action: 'used' });

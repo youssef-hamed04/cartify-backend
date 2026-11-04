@@ -3,7 +3,8 @@ import userModel from '../../db/models/user.model.js';
 import { AppError, asyncHandler } from '../utils/error.js';
 
 export const protectRoute = asyncHandler(async (req, res, next) => {
-  const token = req.cookies?.token || req.headers.authorization?.split(' ')[1];
+  // Bearer header first (mobile app), cookie second (web)
+  const token = req.headers.authorization?.split(' ')[1] || req.cookies?.token;
   if (!token) { req.user = null; return next(); }
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);

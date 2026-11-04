@@ -22,9 +22,11 @@ export function generateLockerCode(userId, date = new Date()) {
 }
 
 
+// Accept today's code, then yesterday's (codes rotate daily but returns live 48h)
 export function validateLockerCode(userId, enteredCode, date = new Date()) {
-  return (
-    String(enteredCode) === generateLockerCode(userId, date)
+  const yesterday = new Date(date.getTime() - 24 * 60 * 60 * 1000);
+  return [date, yesterday].some(
+    (d) => String(enteredCode).trim() === String(generateLockerCode(userId, d))
   );
 }
 

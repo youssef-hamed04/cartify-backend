@@ -16,6 +16,7 @@ import orderRouter from './src/modules/order/order.routes.js';
 import reviewRouter from './src/modules/review/review.routes.js';
 import returnRouter from './src/modules/return/return.routes.js';
 import cameraRouter from './src/modules/camera/camera.routes.js';
+import lockerRouter from './src/modules/locker/locker.routes.js';
 
 import { imageUploadLimiter } from './src/middleware/cameraRateLimit.js';
 
@@ -28,6 +29,7 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,ht
 app.use(cors({
   origin: (origin, cb) => (!origin || allowedOrigins.includes(origin)) ? cb(null, true) : cb(new Error(`CORS: ${origin} not allowed`)),
   credentials: true,
+  exposedHeaders: ['X-Session-Id'],
 }));
 
 app.use(cookieParser());
@@ -53,6 +55,7 @@ app.use('/wishlist', wishlistRouter);
 app.use('/orders', orderRouter);
 app.use('/reviews', reviewRouter);
 app.use('/returns', returnRouter);
+app.use('/lockers', lockerRouter);
 
 // Rate-limit image uploads per box, then route
 app.use('/camera/upload', imageUploadLimiter);

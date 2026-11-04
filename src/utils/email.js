@@ -58,3 +58,11 @@ export const generateOrderConfirmationHtml = (order) => {
     </div>
   </div>`;
 };
+
+export const generateOtpHtml = (code) => `
+  <div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;padding:24px;color:#0f172a;">
+    <h2 style="color:#02067e;margin:0 0 12px;">Your Cartify sign-in code</h2>
+    <p style="margin:0 0 20px;color:#64748b;">Enter this code in the Cartify app. It expires in 10 minutes.</p>
+    <div style="font-size:32px;font-weight:700;letter-spacing:8px;background:#eef2ff;color:#02067e;padding:16px;text-align:center;border-radius:12px;">${code}</div>
+    <p style="margin:20px 0 0;font-size:12px;color:#94a3b8;">If you didn't request this, you can ignore this email.</p>
+  </div>`;

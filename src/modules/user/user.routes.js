@@ -1,11 +1,14 @@
 import { Router } from 'express';
 import { protectRoute, requireAuth, adminOnly } from '../../middleware/auth.js';
-import { validate, authRules, updateUserRules, mongoIdParam } from '../../middleware/validation.js';
+import { validate, authRules, otpVerifyRules, updateUserRules, mongoIdParam } from '../../middleware/validation.js';
+import { otpRequestLimiter } from '../../middleware/cameraRateLimit.js';
 import * as UC from './user.controller.js';
 
 const router = Router();
 
 router.post('/auth',   authRules, validate, UC.authUser);
+router.post('/otp/request', authRules, validate, otpRequestLimiter, UC.requestOtp);
+router.post('/otp/verify',  otpVerifyRules, validate, UC.verifyOtp);
 router.post('/logout', UC.logoutUser);
 router.get('/me',    protectRoute, requireAuth, UC.getMyProfile);
 router.patch('/me',  protectRoute, requireAuth, updateUserRules, validate, UC.updateMyProfile);

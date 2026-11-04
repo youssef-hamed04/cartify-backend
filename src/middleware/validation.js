@@ -15,6 +15,11 @@ export const authRules = [
   body('email').trim().toLowerCase().isEmail().withMessage('Please provide a valid email address'),
 ];
 
+export const otpVerifyRules = [
+  ...authRules,
+  body('code').trim().matches(/^\d{6}$/).withMessage('Enter the 6-digit code'),
+];
+
 export const updateUserRules = [
   body('firstName').optional().trim().isLength({ min: 2 }).withMessage('First name must be at least 2 characters'),
   body('lastName').optional().trim().isLength({ min: 2 }).withMessage('Last name must be at least 2 characters'),
@@ -112,6 +117,17 @@ export const createReturnRules = [
   body('items.*.name').trim().notEmpty().withMessage('Item name is required'),
   body('items.*.color').trim().notEmpty().withMessage('Item color is required'),
   body('items.*.quantity').isInt({ min: 1 }).withMessage('Item quantity must be at least 1'),
+];
+
+// ── Locker ────────────────────────────────────────────────────────────────────
+export const lockerRules = [
+  body('boxId').trim().notEmpty().withMessage('boxId is required'),
+  body('name').trim().notEmpty().withMessage('Locker name is required'),
+  body('address').trim().notEmpty().withMessage('Address is required'),
+  body('location.lat').isFloat({ min: -90, max: 90 }).withMessage('Invalid latitude'),
+  body('location.lng').isFloat({ min: -180, max: 180 }).withMessage('Invalid longitude'),
+  body('status').optional().isIn(['available', 'busy', 'maintenance']).withMessage('Invalid status'),
+  body('freeSlots').optional().isInt({ min: 0 }).withMessage('freeSlots must be 0 or more'),
 ];
 
 // ── Param helpers ─────────────────────────────────────────────────────────────

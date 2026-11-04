@@ -10,6 +10,7 @@ import productModel  from './models/product.model.js';
 import categoryModel from './models/category.model.js';
 import userModel     from './models/user.model.js';
 import counterModel  from './models/counter.model.js';
+import lockerModel   from './models/locker.model.js';
 
 const DB_URI = process.env.DB_URL || process.env.DB_URL_ONLINE;
 
@@ -137,6 +138,17 @@ const seed = async () => {
       console.log('👤  Admin created: admin@cartify.com / Admin@12345');
     } else {
       console.log('👤  Admin already exists — skipped');
+    }
+
+    // SmartBox lockers — SAMPLE locations only (names from the mobile design).
+    // Replace with the real boxes via the admin API: POST/PATCH /lockers
+    if (!(await lockerModel.countDocuments())) {
+      await lockerModel.insertMany([
+        { boxId: 'box-001', name: 'Dokki Metro',  address: 'Dokki Metro Station, Giza',      city: 'Giza',  location: { lat: 30.0384, lng: 31.2122 }, status: 'available', hours: '24/7', freeSlots: 5 },
+        { boxId: 'box-002', name: 'Tahrir Mall',  address: 'Tahrir Square, Downtown Cairo',  city: 'Cairo', location: { lat: 30.0444, lng: 31.2357 }, status: 'available', hours: '24/7', freeSlots: 2 },
+        { boxId: 'box-003', name: 'Mall Elgamaa', address: 'El Gamaa St, Giza',              city: 'Giza',  location: { lat: 30.0262, lng: 31.2101 }, status: 'busy',      hours: '24/7', freeSlots: 0 },
+      ]);
+      console.log('📍  Seeded 3 sample SmartBox lockers');
     }
 
     // Order counter
