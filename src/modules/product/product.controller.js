@@ -64,7 +64,7 @@ export const createProduct = asyncHandler(async (req, res, next) => {
   let parsedVariants = [];
   try { parsedVariants = typeof variantsMeta === 'string' ? JSON.parse(variantsMeta) : (variantsMeta || []); } catch { return next(new AppError('Invalid variantsMeta JSON', 400)); }
   const uploadResults = req.files?.length ? await Promise.all(req.files.map((f) => uploadToCloudinary(f, 'cartify/products'))) : [];
-  const variants = parsedVariants.map((v) => ({ color: v.color, colorHex: v.colorHex || '', stock: v.stock || 0, reserved: 0, images: (v.fileIndexes || []).map((idx) => ({ url: uploadResults[idx]?.secure_url || '', publicId: uploadResults[idx]?.public_id || '' })) }));
+  const variants = parsedVariants.map((v) => ({ color: v.color, colorHex: v.colorHex || '', stock: v.stock || 0, reserved: 0, weight: v.weight ? Number(v.weight) : null, images: (v.fileIndexes || []).map((idx) => ({ url: uploadResults[idx]?.secure_url || '', publicId: uploadResults[idx]?.public_id || '' })) }));
   let slug = slugify(name);
   if (await productModel.findOne({ slug })) slug = `${slug}-${Date.now()}`;
   const product = await productModel.create({ name, slug, price, description, category, brand, discount: discount || 0, raise: raise || 0, variants });
@@ -79,7 +79,7 @@ export const updateProduct = asyncHandler(async (req, res, next) => {
   const uploadResults = req.files?.length ? await Promise.all(req.files.map((f) => uploadToCloudinary(f, 'cartify/products'))) : [];
   if (variantsMeta) {
     let pv; try { pv = typeof variantsMeta === 'string' ? JSON.parse(variantsMeta) : variantsMeta; } catch { return next(new AppError('Invalid variantsMeta JSON', 400)); }
-    product.variants = pv.map((v) => { const old = product.variants.find((x) => x.color === v.color); const oldImgs = (v.keepOldImages || []).map((url) => ({ url })); const newImgs = (v.fileIndexes || []).map((idx) => ({ url: uploadResults[idx]?.secure_url || '', publicId: uploadResults[idx]?.public_id || '' })); return { color: v.color, colorHex: v.colorHex || old?.colorHex || '', stock: v.stock ?? old?.stock ?? 0, reserved: old?.reserved ?? 0, images: [...oldImgs, ...newImgs] }; });
+    product.variants = pv.map((v) => { const old = product.variants.find((x) => x.color === v.color); const oldImgs = (v.keepOldImages || []).map((url) => ({ url })); const newImgs = (v.fileIndexes || []).map((idx) => ({ url: uploadResults[idx]?.secure_url || '', publicId: uploadResults[idx]?.public_id || '' })); return { color: v.color, colorHex: v.colorHex || old?.colorHex || '', stock: v.stock ?? old?.stock ?? 0, reserved: old?.reserved ?? 0, weight: v.weight !== undefined && v.weight !== '' ? Number(v.weight) : old?.weight ?? null, images: [...oldImgs, ...newImgs] }; });
   }
   if (name !== undefined) { product.name = name; product.slug = slugify(name); }
   if (price !== undefined) product.price = price;

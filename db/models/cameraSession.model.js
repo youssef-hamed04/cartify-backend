@@ -1,4 +1,5 @@
 import { Schema, model } from 'mongoose';
+import { verificationSchema } from './verification.schema.js';
 
 const cameraSessionSchema = new Schema(
   {
@@ -40,6 +41,9 @@ const cameraSessionSchema = new Schema(
     // Retry tracking
     attemptNumber: { type: Number, default: 1 },
     errorMessage: { type: String, trim: true },
+
+    // Weight + image check of what was dropped in the box
+    verification: { type: verificationSchema, default: null },
 
     // Hardware info
     deviceFirmware: { type: String, trim: true },

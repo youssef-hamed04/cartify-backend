@@ -19,5 +19,6 @@ router.get('/sessions', CC.listSessions);
 router.get('/session/:id', ...mongoIdParam('id'), validate, CC.getSession);
 router.get('/return/:returnId', ...mongoIdParam('returnId'), validate, CC.getSessionByReturn);
 router.delete('/session/:id', ...mongoIdParam('id'), validate, CC.deleteSession);
+router.post('/session/:id/verify', ...mongoIdParam('id'), validate, CC.reverifySession);
 
 export default router;

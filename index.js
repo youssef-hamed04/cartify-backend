@@ -19,6 +19,7 @@ import cameraRouter from './src/modules/camera/camera.routes.js';
 import lockerRouter from './src/modules/locker/locker.routes.js';
 
 import { imageUploadLimiter } from './src/middleware/cameraRateLimit.js';
+import { warmUpVerification } from './src/utils/returnVerification.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -70,6 +71,7 @@ const startServer = async () => {
   try {
     await connectToDB();
     app.listen(PORT, () => console.log(`🚀  Cartify API → http://localhost:${PORT}`));
+    warmUpVerification();
   } catch (err) {
     console.error('Failed to start server:', err.message);
     process.exit(1);

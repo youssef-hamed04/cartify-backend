@@ -16,6 +16,24 @@ import { AppError, asyncHandler } from '../../utils/error.js';
 import { sendSuccess } from '../../utils/response.js';
 import { uploadImageToCloud, deleteImageFromCloud } from '../../utils/imageUpload.js';
 import { handleImageUpload } from '../../middleware/imagesMulter.js'
+import { failedVerification, isVerificationEnabled, verifyReturnDrop } from '../../utils/returnVerification.js';
+
+// Runs the weight + image check and stores the verdict on the session and its return
+const runVerification = async (session, returnDoc, imageBuffer, measuredWeight) => {
+  let verification;
+  try {
+    verification = await verifyReturnDrop({ imageBuffer, measuredWeight, items: returnDoc.items });
+    console.log(`[verify] return ${returnDoc._id} → ${verification.verdict} (image ${verification.visual.score}, weight ${verification.weight.passed})`);
+  } catch (err) {
+    console.error('[verify] check failed:', err.message);
+    verification = failedVerification(err);
+  }
+  await Promise.all([
+    cameraSessionModel.findByIdAndUpdate(session._id, { verification }),
+    returnModel.findOneAndUpdate({ _id: returnDoc._id, imageSessionId: session._id }, { verification }),
+  ]);
+  return verification;
+};
 
 // ── POST /camera/upload ───────────────────────────────────────────────────────
 /**
@@ -130,6 +148,7 @@ export const uploadImage = asyncHandler(async (req, res, next) => {
       imageSessionId: session._id,
       imageUploadedAt: new Date(),
       weight: weight ? Number(weight) : null,
+      verification: isVerificationEnabled() ? { verdict: 'processing', reasons: [] } : null,
     },
   });
 
@@ -137,6 +156,28 @@ export const uploadImage = asyncHandler(async (req, res, next) => {
     sessionId: session._id,
     imageUrl: cloudResult.url,
   });
+
+  // The box doesn't wait for the check; the verdict is saved when it finishes
+  if (isVerificationEnabled()) {
+    runVerification(session, returnDoc, imageBuffer, weight ? Number(weight) : null);
+  }
+});
+
+// ── POST /camera/session/:id/verify (admin) ───────────────────────────────────
+// Re-runs the check on a stored photo, e.g. after setting product weights.
+export const reverifySession = asyncHandler(async (req, res, next) => {
+  await connectToDB();
+  const session = await cameraSessionModel.findById(req.params.id);
+  if (!session?.imageUrl) return next(new AppError('Session or image not found', 404));
+  const returnDoc = await returnModel.findById(session.returnId);
+  if (!returnDoc) return next(new AppError('Return request not found', 404));
+
+  const image = await fetch(session.imageUrl);
+  if (!image.ok) return next(new AppError('Could not download the stored image', 502));
+  const imageBuffer = Buffer.from(await image.arrayBuffer());
+
+  const verification = await runVerification(session, returnDoc, imageBuffer, session.weight);
+  sendSuccess(res, 200, 'success', { verification });
 });
 
 // ── GET /camera/sessions ──────────────────────────────────────────────────────

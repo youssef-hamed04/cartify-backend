@@ -1,4 +1,5 @@
 import { Schema, model } from 'mongoose';
+import { verificationSchema } from './verification.schema.js';
 
 const returnSchema = new Schema(
   {
@@ -55,6 +56,9 @@ const returnSchema = new Schema(
     imageUrl: { type: String, default: null },
     imageSessionId: { type: Schema.Types.ObjectId, ref: 'cameraSession', default: null },
     imageUploadedAt: { type: Date, default: null },
+
+    // Latest SmartBox drop-off check (copied from the camera session)
+    verification: { type: verificationSchema, default: null },
   },
   { timestamps: true }
 );

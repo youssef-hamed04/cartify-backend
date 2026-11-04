@@ -12,6 +12,7 @@ const variantSchema = new Schema(
     images:   [imageSchema],
     stock:    { type: Number, default: 0, min: 0 },
     reserved: { type: Number, default: 0, min: 0 },
+    weight:   { type: Number, default: null, min: 0 }, // grams, used by the SmartBox weight check
   },
   { _id: false }
 );
