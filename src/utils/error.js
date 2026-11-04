@@ -25,6 +25,7 @@ export const globalErrorHandler = (err, req, res, next) => {
 
   const statusCode = err.statusCode || 500;
   const message    = err.isOperational ? err.message : 'Internal server error';
+  if (!err.isOperational) console.error(`[error] ${req.method} ${req.originalUrl}:`, err);
 
   return res.status(statusCode).json({
     msg: 'error',

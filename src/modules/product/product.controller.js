@@ -11,12 +11,14 @@ export const getProducts = asyncHandler(async (req, res) => {
   await connectToDB();
   const { page = 1, limit = 4, search, category, brand, minPrice, maxPrice, sort, featured, color } = req.query;
   const filter = { hide: false };
-  if (search) filter.$or = [{ name: { $regex: search, $options: 'i' } }, { category: { $regex: search, $options: 'i' } }, { brand: { $regex: search, $options: 'i' } }, { description: { $regex: search, $options: 'i' } }];
-  if (category) filter.category = { $regex: category, $options: 'i' };
-  if (brand) filter.brand = { $regex: brand, $options: 'i' };
+  // Match the text literally: names like "iPad Air (M3)" or "C++" aren't regex patterns
+  const like = (text) => ({ $regex: String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' });
+  if (search) filter.$or = [{ name: like(search) }, { category: like(search) }, { brand: like(search) }, { description: like(search) }];
+  if (category) filter.category = like(category);
+  if (brand) filter.brand = like(brand);
   if (featured === 'true') filter.isFeatured = true;
   if (minPrice || maxPrice) { filter.price = {}; if (minPrice) filter.price.$gte = Number(minPrice); if (maxPrice) filter.price.$lte = Number(maxPrice); }
-  if (color) filter['variants.color'] = { $regex: color, $options: 'i' };
+  if (color) filter['variants.color'] = like(color);
   const sortMap = { price_asc: { price: 1 }, price_desc: { price: -1 }, newest: { createdAt: -1 }, rating: { 'rating.average': -1 } };
   const sortQuery = sortMap[sort] || { createdAt: -1 };
   const p = Math.max(parseInt(page) || 1, 1);
