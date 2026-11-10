@@ -50,6 +50,9 @@ const orderSchema = new Schema(
     paidAt: { type: Date },
     trackingNumber: { type: String, trim: true },
     notes: { type: String, trim: true },
+    // Branch that fulfilled the order (in-store / branch orders). null = online store.
+    // Optional and unset by existing flows; used by demand forecasting for branch-level sales.
+    branchId: { type: Schema.Types.ObjectId, ref: 'branch', default: null },
   },
   { timestamps: true }
 );

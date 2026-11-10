@@ -5,3 +5,7 @@ uploads/
 .DS_Store
 certs/
 .cache/
+ai-service/.venv/
+__pycache__/
+*.pyc
+forecast-dataset.json

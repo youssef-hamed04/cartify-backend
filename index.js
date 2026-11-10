@@ -17,9 +17,14 @@ import reviewRouter from './src/modules/review/review.routes.js';
 import returnRouter from './src/modules/return/return.routes.js';
 import cameraRouter from './src/modules/camera/camera.routes.js';
 import lockerRouter from './src/modules/locker/locker.routes.js';
+import forecastRouter from './src/modules/forecast/forecast.routes.js';
+import branchRouter from './src/modules/branch/branch.routes.js';
+import inventoryRouter from './src/modules/inventory/inventory.routes.js';
+import assistantRouter from './src/modules/assistant/assistant.routes.js';
 
 import { imageUploadLimiter } from './src/middleware/cameraRateLimit.js';
 import { warmUpVerification } from './src/utils/returnVerification.js';
+import { startSnapshotSchedule } from './src/modules/inventory/snapshot.service.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -57,6 +62,10 @@ app.use('/orders', orderRouter);
 app.use('/reviews', reviewRouter);
 app.use('/returns', returnRouter);
 app.use('/lockers', lockerRouter);
+app.use('/forecasts', forecastRouter);
+app.use('/branches', branchRouter);
+app.use('/inventory', inventoryRouter);
+app.use('/assistant', assistantRouter);
 
 // Rate-limit image uploads per box, then route
 app.use('/camera/upload', imageUploadLimiter);
@@ -72,6 +81,7 @@ const startServer = async () => {
     await connectToDB();
     app.listen(PORT, () => console.log(`🚀  Cartify API → http://localhost:${PORT}`));
     warmUpVerification();
+    startSnapshotSchedule();
   } catch (err) {
     console.error('Failed to start server:', err.message);
     process.exit(1);
