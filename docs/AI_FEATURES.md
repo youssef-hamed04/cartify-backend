@@ -6,9 +6,9 @@ the website and the mobile app. The existing Node.js + Express backend, MongoDB/
 authentication, routes and UI are unchanged. Everything new is added alongside them.
 
 > **Free and open-source only.** No paid AI API, no API key, no subscription and no pay-per-request
-> service is used. The agents run an open-weight model (**Qwen3** by default; **Gemma 4** for machines with
-> 16 GB+ RAM; both Apache-2.0) on your own machine or server through **Ollama** (MIT). Forecasting uses scikit-learn, XGBoost and NumPy (with statsmodels
-> and Prophet in the offline comparison). Local inference has no per-request fee, but it uses the
+> service is used. The agents run an open-weight model (**Qwen3** by default; **Gemma 4** for machines
+> with 16 GB+ RAM; both Apache-2.0) on your own machine or server through **Ollama** (MIT). Forecasting
+> uses scikit-learn, XGBoost, Prophet, pandas and NumPy (statsmodels in the offline comparison). Local inference has no per-request fee, but it uses the
 > machine's CPU/GPU, memory and electricity. See section 12 for the technology audit.
 
 > **About the demo data.** Cartify has no order history and no branches yet. To build and show the
@@ -250,36 +250,50 @@ never from model text.
 - **Features:** stockout-aware demand rates (7/14/28/56/91 days), in-stock share, short- vs
   long-term trend, 8-week slope, price, discount, price change, month of the target window, time on
   sale, the same weeks last year (rate and seasonal swing), category and location.
-- **Models compared (in the service, on every run):** 28-day moving average and same-weeks-last-year
-  seasonal naive (baselines), ridge linear regression, random forest, histogram gradient boosting with
-  a Poisson loss (scikit-learn) and XGBoost (Poisson objective). One global model per horizon is
-  trained across all products and locations.
-- **Compared offline** (`ai-service/scripts/evaluate.py --classical --prophet N`): per-series
-  exponential smoothing with a damped trend (statsmodels) and Prophet, scored on the same hold-out
-  samples.
+- **Candidates (in the service, on every run), all free and open source:**
+  - baselines: 28-day moving average and same-weeks-last-year seasonal naive;
+  - global ML models, trained across all products and locations: ridge linear regression, random
+    forest, histogram gradient boosting with a Poisson loss (scikit-learn) and **XGBoost** (Poisson
+    objective);
+  - **Prophet** (one model per product-location: trend + yearly and weekly seasonality, fitted on
+    in-stock days only) and the **average of the best ML model and Prophet**.
 - **Training and evaluation:** weekly forecast dates; the latest 25 % are a time-based test set, and
-  training samples that overlap it are dropped. The lowest test MAE is selected, then retrained on all
-  data. The test errors give each prediction its 10–90 % range.
+  training samples that overlap it are dropped. ML models are scored on every test sample. Prophet
+  needs one fit per series and date, so it is scored on the test samples of 3 test dates spread over
+  the test period, and Prophet or the average is selected only if it beats the best ML model **on
+  exactly the same samples**. The winner is retrained on all data; its test errors give each
+  prediction a 10–90 % range. A full run (3 horizons, 180 series, about 1,800 Prophet fits in parallel)
+  takes about 65 s on 4 CPU cores. `FORECAST_PROPHET=off` skips Prophet ({{NOPROPHET}}).
+- **Also compared offline** (`ai-service/scripts/evaluate.py --classical --prophet -1`): per-series
+  exponential smoothing with a damped trend (statsmodels), and Prophet on every test sample.
 - **Stock decisions** (`stockPolicy.js`): safety stock = max(z × σ × √(lead time ⁄ H), 3 days of
   demand) at a 95 % service level with a 7-day lead time; suggested reorder = forecast + safety −
   available − inbound. All of these settings are configurable.
 
-**Results** on the synthetic demo data (full report: [ai-service/EVALUATION.md](../ai-service/EVALUATION.md)):
+**Results** on the synthetic demo data: MAE in units per product-location over the horizon, all
+models on **every** test sample (full report: [ai-service/EVALUATION.md](../ai-service/EVALUATION.md)):
 
-| Horizon | Selected model | MAE | WAPE | MAE of 28-day moving average | Improvement |
-|---|---|---:|---:|---:|---:|
-| 7 days | Gradient boosting | 5.81 | 25.6 % | 6.16 | 5.8 % |
-| 30 days | Gradient boosting | 16.24 | 17.0 % | 20.37 | 20.3 % |
-| 90 days | Gradient boosting | 48.25 | 17.3 % | 62.53 | 22.8 % |
+| Horizon (test samples) | Average XGBoost + Prophet | Prophet | XGBoost | scikit-learn gradient boosting | Exponential smoothing (statsmodels) | 28-day moving average |
+|---|---:|---:|---:|---:|---:|---:|
+| 7 days (4,232) | **5.59** | 5.98 | 5.76 | 5.81 | 5.94 | 6.16 |
+| 30 days (4,139) | **14.82** | 16.70 | 16.19 | 16.24 | 18.90 | 20.37 |
+| 90 days (3,780) | 35.39 | **35.22** | 45.99 | 48.25 | 56.69 | 62.53 |
 
-Gradient boosting beat random forest, linear regression and both baselines at every horizon. Most of
-the gain at 30 and 90 days comes from the last-year features (seasonality such as back-to-school and
-White Friday); with a single year of history the models barely beat the moving average. Stockout
-handling, scored against the simulated true demand, lowered the error and the under-forecasting at 7
-and 30 days (30 days: MAE 16.36 vs 16.84, bias −2.5 % vs −4.7 %). It did not help at 90 days in this
-dataset, where only 2.4 % of days end sold out. An earlier version of the demo data with more
-stockouts showed a much larger gain (30 days: 16.2 vs 21.8). These numbers describe **synthetic
-data**; real accuracy must be measured again on real orders (the same report script does that).
+The service picks the same winners from its 3-date sample: the average at 7 and 30 days, Prophet at
+90 days (best ML model on the same samples: XGBoost). Compared with the 28-day moving average, the
+error is 9 % lower at 7 days, 27 % at 30 days and 44 % at 90 days. Random forest and ridge
+regression were behind XGBoost at every horizon.
+
+What drives the result: short horizons depend mostly on recent sales (the 14–28-day rates are the top
+ML features), which the ML models capture well; at 90 days the yearly pattern (back-to-school, White
+Friday) dominates, and Prophet models it directly per series. Averaging the two combines both. With
+less than a year of history the seasonal parts cannot be learnt and the models are close to the
+moving average. Stockout handling, scored against the simulated true demand, lowered the error and
+the under-forecasting at 7 and 30 days (30 days: MAE 16.27 vs 17.00, bias −2.1 % vs −4.3 %); at 90
+days it did not help (46.01 vs 45.62) in this dataset, where only 2.4 % of days end sold out. These numbers
+describe **synthetic data**, whose seasonality is regular and may suit Prophet better than real
+sales; real accuracy must be measured again on real orders (the same script does that), and the
+service re-selects the model on every run.
 
 ## 7. Agent tools and permissions
 
@@ -332,6 +346,8 @@ The assistant cannot check out, pay, cancel orders or change addresses.
 | `ASSISTANT_RATE_LIMIT_PER_MIN` | 15 | Chat messages per user or session per minute |
 | `INTERNAL_API_URL` | `http://127.0.0.1:$PORT` | How agent tools reach the API. Set it to the public URL on serverless hosting. |
 | `AI_SERVICE_URL` / `AI_SERVICE_KEY` | `http://127.0.0.1:8001` / — | Forecasting service and shared secret (set the same key on the service) |
+| `AI_SERVICE_TIMEOUT_MS` | 120000 | Max time for one forecasting run |
+| `FORECAST_PROPHET` / `FORECAST_PROPHET_EVAL_DATES` / `FORECAST_WORKERS` | on / 3 / all cores | **Set on the AI service.** Prophet candidates on or off, test dates used to score them, parallel processes |
 | `FORECAST_DATA_SOURCE` | `auto` | `auto`, `orders` or `synthetic_demo` |
 | `FORECAST_LOOKBACK_DAYS` | 730 | History used for training |
 | `FORECAST_LEAD_TIME_DAYS` / `FORECAST_SERVICE_LEVEL` | 7 / 0.95 | Safety stock |
@@ -438,6 +454,7 @@ npm run test:ai-live                       # 11 English/Arabic scenarios, prints
 | Out of memory / swapping | Lower `OLLAMA_NUM_CTX` (e.g. 4096) or use a smaller model. `qwen3:4b-instruct` needs about 4–5 GB free RAM. |
 | Mobile app shows a network error while waiting | The app allows 5 minutes for assistant answers (`src/api/index.ts`); if your server is slower, use a faster model/machine. A reverse proxy (nginx) in front of the backend also needs a long `proxy_read_timeout`. |
 | Forecasting: "The demand forecasting service is not reachable" | Start the Python service (9.3) and check `AI_SERVICE_URL` / `AI_SERVICE_KEY`. Saved forecasts stay visible meanwhile. |
+| Forecasting run is slow or times out | Prophet fits one model per series. On a slow machine or with many products, set `FORECAST_PROPHET=off` on the AI service, lower `FORECAST_PROPHET_EVAL_DATES`, or raise `AI_SERVICE_TIMEOUT_MS` on the backend (default 120000). |
 
 ## 10. Testing results
 
@@ -446,7 +463,7 @@ All results come from a local MongoDB 7 with the demo data and a CPU-only machin
 | Suite | Result |
 |---|---|
 | `npm run test:api`: existing endpoints (catalog, cart via cookie and `X-Session-Id`, wishlist, login and admin checks, order flow, stock decrement, order ownership, returns, cancel restores stock, logout). Run **before and after** the changes. | 44 / 44 passed |
-| `npm run test:inventory`: forecast run and model selection, views, recommendations, approve/complete/cancel/reject with reservations, validation, adjustments, anomalies, report, admin-only access | 34 / 34 passed (XGBoost selected at 7, 30 and 90 days) |
+| `npm run test:inventory`: forecast run and model selection, views, recommendations, approve/complete/cancel/reject with reservations, validation, adjustments, anomalies, report, admin-only access | 34 / 34 passed (selected: XGBoost + Prophet average at 7 and 30 days, Prophet at 90 days) |
 | `npm run test:ai-tools`: every agent tool against the API, schema validation, confirmation-only actions, order privacy, customers and guests blocked from inventory tools | 43 / 43 passed |
 | `npm run test:agents`: agent loop end to end with a scripted Ollama stand-in (tool calls, blocks, automatic product cards, confirm/cancel, double-confirm, cross-user access, invalid/unknown tools, loop cap, empty replies, model missing / server error / server down, inventory agent permissions) and mobile-style requests | 39 / 39 + 8 / 8 passed |
 | `npm run test:ai-live`: **the real local model** on 11 English/Arabic scenarios | `qwen3:4b-instruct`: 11 / 11, twice. Other models: section 9.1 |
@@ -517,7 +534,8 @@ Every AI component is free and open source and runs on your own hardware.
 | Agent framework | — | LangGraph, LangChain | **Own ~150-line tool loop** (simplest; no extra dependency) |
 | scikit-learn, NumPy, FastAPI, uvicorn, pydantic | Free (BSD/MIT) | — | Kept |
 | XGBoost | Free (Apache-2.0) | — | **Added** as a forecasting candidate |
-| statsmodels, Prophet, pandas | Free (BSD/MIT) | — | Used in the offline model comparison (`requirements-eval.txt`) |
+| Prophet, pandas | Free (MIT/BSD) | — | **Added**: Prophet and the ML + Prophet average are forecasting candidates (most accurate in the tests) |
+| statsmodels | Free (BSD) | — | Offline comparison only (`requirements-eval.txt`): exponential smoothing was less accurate |
 | MongoDB (existing) | Community Server is free; the existing `.env` also mentions MongoDB Atlas (cloud) | MongoDB Community, local or self-hosted | Kept as is; the AI features add no new database and work on local MongoDB |
 | Vector database / embeddings | not used | sentence-transformers, FAISS, Chroma (local) | Not added (no measurable benefit for 45 products; see section 11) |
 | Hosting | — | Self-hosting | Ollama and the AI service run on your own machine/server; no paid AI hosting |

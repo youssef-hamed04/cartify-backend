@@ -5,7 +5,7 @@ stays the main application: it reads the sales history from MongoDB, sends it he
 predictions. **This service has no database access** and keeps no data between requests.
 
 ```
-Node backend (MongoDB)  ──POST /forecast (daily sales per product × location)──▶  ai-service (scikit-learn, XGBoost)
+Node backend (MongoDB)  ──POST /forecast (daily sales per product × location)──▶  ai-service (scikit-learn, XGBoost, Prophet)
                         ◀── predictions per horizon + model evaluation ─────────
 ```
 
@@ -19,12 +19,17 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt        # Windows: .venv\Scripts\pip install -r requirements.txt
 ```
 
-Dependencies (pinned in `requirements.txt`, all free and open source): `scikit-learn`, `xgboost` and
-`numpy` for the models, `fastapi`, `uvicorn` and `pydantic` for the HTTP API with request
-validation. No paid service or API key is involved; everything runs on your machine.
+Dependencies (pinned in `requirements.txt`, all free and open source): `scikit-learn`, `xgboost`,
+`prophet` (with `pandas` and `cmdstanpy`; prebuilt wheels, nothing to compile) and `numpy` for the
+models, `fastapi`, `uvicorn` and `pydantic` for the HTTP API with request validation. No paid
+service or API key is involved; everything runs on your machine. The install needs about 0.8 GB of disk.
 
 For the offline model comparison only (not needed to run the service):
-`.venv/bin/pip install -r requirements-eval.txt` adds `statsmodels`, `pandas` and `prophet`.
+`.venv/bin/pip install -r requirements-eval.txt` adds `statsmodels`.
+
+Optional settings (environment): `FORECAST_PROPHET=off` skips the Prophet candidates (faster runs),
+`FORECAST_PROPHET_EVAL_DATES` (default 3) sets how many test dates Prophet is scored on,
+`FORECAST_WORKERS` (default: all CPU cores) the parallel processes for the Prophet fits.
 
 ## Run
 
@@ -54,14 +59,18 @@ serving the last saved forecast and the admin page shows how to start it.
   location.
 - **Candidates:** 28-day moving average and same-weeks-last-year seasonal naive (baselines),
   ridge linear regression, random forest, histogram gradient boosting with a Poisson loss
-  (scikit-learn) and XGBoost with a Poisson objective. One global model is trained per horizon
+  (scikit-learn) and XGBoost with a Poisson objective. These are global models, trained per horizon
   across all products and locations, so new or slow products borrow strength from similar ones.
+  Plus **Prophet** (`app/prophet_model.py`): one model per product-location (trend, yearly and weekly
+  seasonality) fitted on in-stock days only, and the **average of the best ML model and Prophet**.
 - **Evaluation:** weekly forecast dates; the latest 25 % are the test set. Training samples whose
   target window reaches into the test period are dropped, so nothing from the test weeks leaks into
   training. Metrics are MAE, RMSE, WAPE, MAPE (only where demand ≥ 5 units, where it is meaningful)
   and bias, on total units per product-location over the horizon.
-- **Selection:** the lowest test MAE wins (a baseline wins if it is better). The winner is then
-  retrained on all data and predicts from the latest date. The 10th–90th percentile of the test
+- **Selection:** the lowest test MAE wins (a baseline wins if it is better). Prophet needs one fit per
+  series and date, so Prophet and the average are scored on the test samples of 3 test dates and win
+  only if they beat the best ML model on exactly those samples. The winner is then retrained on all
+  data and predicts from the latest date (one Prophet fit per series serves all horizons). The 10th–90th percentile of the test
   errors gives each prediction its range.
 - With less than `56 + H` days of history no evaluation is possible: the service returns the
   moving average, marks the horizon `baseline_only` and claims no accuracy.
@@ -79,10 +88,11 @@ includes the simulated true demand, it also compares stockout-aware training wit
 (sold-out days counted as zero demand).
 
 Add `--classical` to also score per-series exponential smoothing (statsmodels, damped trend on
-weekly in-stock rates) and `--prophet N` to score Prophet on N random hold-out samples (one Prophet
-fit per sample, so it is slow). Both are scored on exactly the same hold-out samples as the ML
-models. They are not used by the service because the global ML models were more accurate (see
-[EVALUATION.md](EVALUATION.md) for the latest run).
+weekly in-stock rates) and `--prophet N` to score Prophet and the ML + Prophet average on N random
+hold-out samples, or `--prophet -1` on all of them (one Prophet fit per sample; use `--workers 4`).
+All are scored on exactly the same hold-out samples as the ML models. On the demo data the average
+won at 7 and 30 days and Prophet at 90 days; exponential smoothing was less accurate than XGBoost
+at every horizon and is not used by the service (see [EVALUATION.md](EVALUATION.md)).
 
 ## Tests
 
