@@ -50,6 +50,20 @@ def _workers() -> int:
         return os.cpu_count() or 1
 
 
+def _quiet() -> None:
+    """cmdstanpy logs two INFO lines per fit and installs its own handler when none exists."""
+    try:
+        from cmdstanpy.utils import get_logger
+        get_logger()  # creates cmdstanpy's handler now, so the levels below stick
+    except Exception:
+        pass
+    for name in ("cmdstanpy", "prophet"):
+        lg = logging.getLogger(name)
+        lg.setLevel(logging.WARNING)
+        for h in lg.handlers:
+            h.setLevel(logging.WARNING)
+
+
 def fit_path(task) -> np.ndarray | None:
     """Fit Prophet on one series' in-stock days up to `origin`; return the predicted daily demand for
     the next `steps` days (clipped at 0), or None when there is too little data."""
@@ -59,8 +73,7 @@ def fit_path(task) -> np.ndarray | None:
     import pandas as pd
     from prophet import Prophet
 
-    for name in ("cmdstanpy", "prophet"):
-        logging.getLogger(name).setLevel(logging.ERROR)
+    _quiet()
     base = pd.Timestamp(start)
     df = pd.DataFrame({"ds": base + pd.to_timedelta(days, unit="D"), "y": sales})
     model = Prophet(yearly_seasonality=bool(days[-1] - days[0] >= 365), weekly_seasonality=True,

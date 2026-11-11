@@ -178,7 +178,7 @@ def main() -> None:
             lines += ["", "Top features: " + ", ".join(f"{f['feature']} ({f['importance']:.2f})" for f in h["featureImportance"][:6])]
         for w in h["warnings"]:
             lines += ["", f"> ⚠️ {w}"]
-        ml_models = [c for c in h["candidates"] if c["name"] not in ("prophet", "moving_average_28d", "seasonal_naive")]
+        ml_models = [c for c in h["candidates"] if not c.get("scoredOn") and c["name"] not in ("moving_average_28d", "seasonal_naive")]
         ml_name = min(ml_models, key=lambda c: c["mae"])["name"] if ml_models else "gradient_boosting"
         if has_latent and h["status"] == "ok":
             ab = stockout_ablation(series, fs, h["horizonDays"], start, total, ml_name)

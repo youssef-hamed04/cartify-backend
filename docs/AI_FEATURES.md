@@ -263,7 +263,7 @@ never from model text.
   the test period, and Prophet or the average is selected only if it beats the best ML model **on
   exactly the same samples**. The winner is retrained on all data; its test errors give each
   prediction a 10–90 % range. A full run (3 horizons, 180 series, about 1,800 Prophet fits in parallel)
-  takes about 65 s on 4 CPU cores. `FORECAST_PROPHET=off` skips Prophet ({{NOPROPHET}}).
+  takes about 65 s on 4 CPU cores. `FORECAST_PROPHET=off` skips Prophet (about 15 s; XGBoost is then selected at every horizon).
 - **Also compared offline** (`ai-service/scripts/evaluate.py --classical --prophet -1`): per-series
   exponential smoothing with a damped trend (statsmodels), and Prophet on every test sample.
 - **Stock decisions** (`stockPolicy.js`): safety stock = max(z × σ × √(lead time ⁄ H), 3 days of
