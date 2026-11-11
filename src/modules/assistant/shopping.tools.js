@@ -48,6 +48,17 @@ export function cardData(p) {
 
 const getProduct = async (api, id) => (await callApi(api, 'GET', `/products/${id}`)).product;
 
+// Resolve a product name (as the customer wrote it) to one catalog product via the public search API:
+// exact name first, then the closest containing match. Returns null when nothing matches.
+async function findByName(api, name) {
+  const sq = (t) => String(t || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+  const res = await callApi(api, 'GET', '/products', { query: { search: name, limit: 10 } }).catch(() => null);
+  const list = res?.products || [];
+  const q = sq(name);
+  const hit = list.find((p) => sq(p.name) === q) || list.find((p) => sq(p.name).includes(q) || q.includes(sq(p.name)));
+  return hit ? getProduct(api, hit._id).catch(() => hit) : null;
+}
+
 // Products returned by tools during this turn, so the products the reply recommends can be shown
 // as real catalog cards even if the model does not call show_products itself.
 const remember = (ctx, products) => {
@@ -178,15 +189,28 @@ export const shoppingTools = [
   },
   {
     name: 'compare_products',
-    description: 'Compare 2 to 4 products side by side (price, discount, rating, brand, category, colours in stock, description). The customer sees the comparison as a table.',
-    input_schema: obj({ productIds: { type: 'array', items: productId, minItems: 2, maxItems: 4, uniqueItems: true } }, ['productIds']),
-    handler: async ({ productIds }, { api }) => {
-      const products = await Promise.all(productIds.map((id) => getProduct(api, id).catch(() => null)));
+    description: 'Compare 2 to 4 products side by side (price, discount, rating, brand, category, colours in stock, description). The customer sees the comparison as a table. Pass productIds from an earlier tool result, or productNames (exact catalog names) when you have no ids yet.',
+    input_schema: obj({
+      productIds: { type: 'array', items: productId, minItems: 2, maxItems: 4, uniqueItems: true },
+      productNames: { type: 'array', items: { type: 'string', minLength: 2, maxLength: 120 }, minItems: 2, maxItems: 4, uniqueItems: true, description: 'Product names as the customer or an earlier tool result wrote them' },
+    }),
+    handler: async ({ productIds, productNames }, ctx) => {
+      const { api } = ctx;
+      if (!productIds?.length && !productNames?.length) throw new ToolError('Pass productIds (from search_products) or productNames');
+      const products = productIds?.length
+        ? await Promise.all(productIds.map((id) => getProduct(api, id).catch(() => null)))
+        : await Promise.all(productNames.map((n) => findByName(api, n)));
+      const asked = productIds?.length ? productIds : productNames;
       const found = products.filter(Boolean);
-      if (found.length < 2) throw new ToolError('At least two of these products could not be found');
+      if (found.length < 2) {
+        throw new ToolError(productIds?.length
+          ? 'These product ids are not in the catalog. Never invent ids: call search_products with the product names first and use the ids it returns.'
+          : `Could not find at least two of these products: ${asked.join(', ')}. Call search_products to find the exact names.`);
+      }
+      remember(ctx, found);
       const rows = found.map((p) => ({ ...compactProduct(p, { long: true }), card: cardData(p) }));
       return {
-        data: { currency: CURRENCY, products: rows.map(({ card, ...r }) => r), missing: productIds.filter((id, i) => !products[i]) },
+        data: { currency: CURRENCY, products: rows.map(({ card, ...r }) => r), missing: asked.filter((_, i) => !products[i]) },
         block: { type: 'comparison', products: rows.map((r) => ({ ...r.card, inStockColors: r.colors.filter((c) => c.available > 0).map((c) => c.color), description: clip(r.description, 160) })) },
       };
     },

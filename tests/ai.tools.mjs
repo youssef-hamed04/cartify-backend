@@ -40,6 +40,10 @@ r = await run(shoppingTools, 'get_product_details', { productId: pids[0] }, gues
 ok('product details', r.data.product.id === pids[0] && Array.isArray(r.data.latestReviews));
 r = await run(shoppingTools, 'compare_products', { productIds: pids.slice(0, 3) }, guest);
 ok('compare + block', r.data.products.length === 3 && r.block.type === 'comparison');
+r = await run(shoppingTools, 'compare_products', { productNames: ['Ghost Audio Elite', 'soundcore r50i'] }, guest);
+ok('compare by product names', r.data.products.map((p) => p.name).join('|') === 'Ghost Audio Elite|Soundcore R50i' && r.block.products.length === 2);
+await run(shoppingTools, 'compare_products', { productIds: ['614785841234567890123456', '614785841234567890123457'] }, guest)
+  .then(() => ok('made-up ids rejected', false), (e) => ok('made-up ids rejected with a hint to search', /search_products/.test(e.message)));
 r = await run(shoppingTools, 'check_product_availability', { productId: pids[0], quantity: 2 }, guest);
 ok('availability', typeof r.data.canOrder === 'boolean' && r.data.colors.length > 0);
 const color = r.data.colors.find((c) => c.available > 2)?.color;

@@ -65,6 +65,10 @@ function script(body) {
   if (text === 'nudge') return reply('Here is what I found so far.');
   if (text.includes('silent-reply')) return reply('');
   // ── shopping
+  if (text.includes('compare by name')) {
+    if (!results.length) return reply('', [['compare_products', { productNames: ['Ghost Audio Elite', 'Soundcore R50i'] }]]);
+    return reply('The **Soundcore R50i** is cheaper; the **Ghost Audio Elite** is rated higher.');
+  }
   if (text.includes('compare')) {
     if (!results.length) return reply('', [['search_products', { keywords: ['headphone'], limit: 3 }]]);
     if (results.length === 1) return reply('', [['compare_products', { productIds: data.products.slice(0, 2).map((p) => p.id) }]]);

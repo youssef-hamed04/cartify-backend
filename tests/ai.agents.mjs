@@ -79,6 +79,8 @@ r = await g.req('POST', '/assistant/chat', { message: 'unknown tool please' });
 ok('unknown tool rejected, model told the valid tools', r.status === 200 && /Unknown tool/.test(r.data.reply.text), r.data.reply);
 r = await g.req('POST', '/assistant/chat', { message: 'name them please' });
 ok('products named in the reply are shown as catalog cards', r.status === 200 && r.data.reply.blocks[0]?.type === 'products' && r.data.reply.blocks[0].products.length === 2 && r.data.reply.blocks[0].fullProducts?.length === 2, r.data.reply);
+r = await g.req('POST', '/assistant/chat', { message: 'compare by name please' });
+ok('compare by product names gives a comparison table', r.status === 200 && r.data.reply.blocks.some((b) => b.type === 'comparison' && b.products.length === 2), r.data.reply);
 r = await g.req('POST', '/assistant/chat', { message: 'x'.repeat(2001) });
 ok('message length validated', r.status === 400);
 r = await g.req('POST', '/assistant/chat', { message: 'hi', conversationId: '000000000000000000000000' });
