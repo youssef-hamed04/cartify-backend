@@ -6,8 +6,8 @@ the website and the mobile app. The existing Node.js + Express backend, MongoDB/
 authentication, routes and UI are unchanged. Everything new is added alongside them.
 
 > **Free and open-source only.** No paid AI API, no API key, no subscription and no pay-per-request
-> service is used. The agents run an open-weight model (**Qwen3**, Apache-2.0) on your own machine or
-> server through **Ollama** (MIT). Forecasting uses scikit-learn, XGBoost and NumPy (with statsmodels
+> service is used. The agents run an open-weight model (**Qwen3** by default; **Gemma 4** for machines with
+> 16 GB+ RAM; both Apache-2.0) on your own machine or server through **Ollama** (MIT). Forecasting uses scikit-learn, XGBoost and NumPy (with statsmodels
 > and Prophet in the offline comparison). Local inference has no per-request fee, but it uses the
 > machine's CPU/GPU, memory and electricity. See section 12 for the technology audit.
 
@@ -349,19 +349,37 @@ No GPU is required. Measured on the development machine (4-core Intel Xeon 2.1 G
 
 | Model (Ollama tag) | Download | RAM in use | Speed on 4 CPU cores (read / write) | Agent result |
 |---|---:|---:|---|---|
-{{MODEL_TABLE}}
+| **`qwen3:4b-instruct`** (Qwen3-4B-Instruct-2507, Apache-2.0) — **default** | 2.5 GB | 4.3 GB | 76 / 6.3 tokens/s | **22 / 22** (two full runs); median 57 s, slowest 120 s |
+| `gemma4:e4b` (Gemma 4 E4B, Apache-2.0) | 6.6 GB | 7.8 GB | 66 / 4.9 tokens/s | 21 / 22¹; median **19 s**, slowest 70 s: the fastest end to end (shorter answers) |
+| `qwen3.5:4b` (Apache-2.0) | 3.3 GB | 4.8 GB | 73 / 6.8 tokens/s | 21 / 22²; median 50 s, slowest 89 s |
+| `qwen3:8b` (Apache-2.0) | 5.2 GB | ~6.8 GB | 43 / 4.1 tokens/s | 10 / 11³; median 60 s, slowest 274 s |
+| `qwen3:1.7b` (Apache-2.0) | 1.4 GB | ~2 GB | 175 / 14 tokens/s | 0 / 11: wrote tool calls as plain text instead of calling the tools |
+| `qwen3:4b` (the tag is the *Thinking-2507* build) | 2.5 GB | ~4 GB | ~77 / 7.5 tokens/s | always reasons at length first: the first answer did not finish within 4 minutes |
+
+"Read" is prompt processing, "write" is generation, measured with a 1,100-token prompt; RAM is the
+model process's resident memory after the 11 scenarios (8,192-token context). Agent result = the 11
+English/Arabic scenarios of `npm run test:ai-live` (section 10).
+¹ Once asked which colour to add instead of preparing the cart item. The prompt tells it to do that
+for products with several colours, so the test now accepts it (it would be 22 / 22).
+² Once asked a question instead of calling `suggest_stock_transfer`; the prompt now says to answer broad
+questions with the tools' defaults.
+³ Measured before two fixes: it passed invented product ids to `compare_products`, which now also
+accepts product names and tells the model to search first. Removed afterwards to free disk space.
 
 **Recommendation:**
 
 | Your machine | Model | What to expect |
 |---|---|---|
-| 8 GB RAM, 4+ CPU cores, no GPU (laptop / small VPS) | **`qwen3:4b-instruct`** (default) | Correct tool use in English and Arabic; about 15–60 s per shopping answer and 1.5–2 min per inventory answer on 4 cores. More cores = faster. |
-| 16 GB RAM and 8+ cores, Apple Silicon (M1+), or an NVIDIA GPU with 8 GB+ VRAM | `qwen3:4b-instruct`, or try `qwen3:8b` with `tests/ai.live.mjs` | With a GPU or Apple Silicon both answer in a few seconds; keep the model that passes more scenarios on your data. |
-| Less than 8 GB RAM | — | Smaller models (`qwen3:1.7b`) did not call the tools reliably in our tests, so the agents would not work well. Run Ollama on another machine on your network and set `OLLAMA_URL`. |
+| 8 GB RAM, 4+ CPU cores, no GPU (laptop / small VPS) | **`qwen3:4b-instruct`** (default) | Passed every scenario in English and Arabic; about 10–60 s per shopping answer and 1.5–2 min per inventory answer on 4 cores. More cores = faster. |
+| 16 GB RAM or more, CPU only | **`gemma4:e4b`** | About 3× faster answers in our test (median 19 s); needs about 8 GB free RAM. |
+| Apple Silicon (M1+) or an NVIDIA GPU with 8 GB+ VRAM | `gemma4:e4b`, `qwen3:8b` or `qwen3.5:4b` | A few seconds per answer. Run `npm run test:ai-live` and keep the model that passes the most scenarios on your data. |
+| Less than 8 GB RAM | — | Smaller models (`qwen3:1.7b`) did not call the tools, so the agents would not work. Run Ollama on another machine on your network and set `OLLAMA_URL`. |
 
-Not recommended: `qwen3:4b` (the default `4b` tag is the always-thinking *Thinking-2507* build: it
-writes long reasoning before every answer and timed out on a CPU) and `qwen3:1.7b` (see the table).
-{{GEMMA_NOTE}}
+Why not simply the largest model? `qwen3:8b` fits in 15 GB RAM, but on a 4-core CPU it writes about 4
+tokens per second, so an inventory answer took up to 4.5 minutes, and it did no better than the 4B
+models. On a GPU it is a good choice. **Gemma 3** (`gemma3:*`) cannot be used: its Ollama template has
+no tool support, so the agents could not call any tool. **Gemma 4** and **Qwen3.5** support tools and
+need Ollama 0.30.9 or newer (tested with 0.40.11).
 
 ### 9.2 Install
 
@@ -427,18 +445,36 @@ All results come from a local MongoDB 7 with the demo data and a CPU-only machin
 
 | Suite | Result |
 |---|---|
-| `npm run test:api`: existing endpoints (catalog, cart via cookie and `X-Session-Id`, wishlist, login and admin checks, order flow, stock decrement, order ownership, returns, cancel restores stock, logout). Run **before and after** the changes. | {{T_API}} |
-| `npm run test:inventory`: forecast run and model selection, views, recommendations, approve/complete/cancel/reject with reservations, validation, adjustments, anomalies, report, admin-only access | {{T_INV}} |
-| `npm run test:ai-tools`: every agent tool against the API, schema validation, confirmation-only actions, order privacy, customers and guests blocked from inventory tools | {{T_TOOLS}} |
-| `npm run test:agents`: agent loop end to end with a scripted Ollama stand-in (tool calls, blocks, automatic product cards, confirm/cancel, double-confirm, cross-user access, invalid/unknown tools, loop cap, empty replies, model missing / server error / server down, inventory agent permissions) and mobile-style requests | {{T_AGENTS}} |
-| `npm run test:ai-live`: **the real local model** on 11 English/Arabic scenarios | {{T_LIVE}} |
-| `ai-service` unit tests | {{T_PY}} |
+| `npm run test:api`: existing endpoints (catalog, cart via cookie and `X-Session-Id`, wishlist, login and admin checks, order flow, stock decrement, order ownership, returns, cancel restores stock, logout). Run **before and after** the changes. | 44 / 44 passed |
+| `npm run test:inventory`: forecast run and model selection, views, recommendations, approve/complete/cancel/reject with reservations, validation, adjustments, anomalies, report, admin-only access | 34 / 34 passed (XGBoost selected at 7, 30 and 90 days) |
+| `npm run test:ai-tools`: every agent tool against the API, schema validation, confirmation-only actions, order privacy, customers and guests blocked from inventory tools | 43 / 43 passed |
+| `npm run test:agents`: agent loop end to end with a scripted Ollama stand-in (tool calls, blocks, automatic product cards, confirm/cancel, double-confirm, cross-user access, invalid/unknown tools, loop cap, empty replies, model missing / server error / server down, inventory agent permissions) and mobile-style requests | 39 / 39 + 8 / 8 passed |
+| `npm run test:ai-live`: **the real local model** on 11 English/Arabic scenarios | `qwen3:4b-instruct`: 11 / 11, twice. Other models: section 9.1 |
+| `ai-service` unit tests | 6 / 6 passed |
 | Browser checks (Playwright): Demand Forecasting, Branch & Inventory (recommendations, agent chat, confirm card), dashboard, store widget on desktop and iPhone size | no console errors from the new code |
-| Mobile app: `tsc --noEmit` and `expo lint` | {{T_MOBILE}} |
+| Mobile app: `tsc --noEmit` and `expo lint` | typecheck passes; lint: 0 errors (1 warning in the existing `checkout.tsx`, unchanged) |
 
 **Live agent scenarios** (`qwen3:4b-instruct`, the default; times on the 4-core CPU):
 
-{{LIVE_TABLE}}
+| Scenario | Tools the model called | Time | Result |
+|---|---|---:|---|
+| EN · "I need wireless headphones under $200" | `search_products` | 21 s | passed: product cards, all ≤ $200 |
+| EN · "Add the first one to my cart please" | `add_to_cart` | 22 s | passed: confirmation card, cart unchanged until Confirm |
+| EN · "Compare the Ghost Audio Elite with the Soundcore R50i" | `search_products`, `compare_products` | 57 s | passed: comparison table |
+| AR · "أريد ساعة ذكية بسعر أقل من 600 دولار" | `search_products` | 20 s | passed: Smart Watch Series X, answer in Arabic |
+| AR · "ما الموجود في سلة التسوق الخاصة بي؟" | `get_cart` | 11 s | passed: answer in Arabic |
+| AR · "أين طلبي رقم ABC123؟" | `track_order` | 18 s | passed: says the order was not found, in Arabic |
+| EN · "Which branch has the lowest inventory?" | `get_inventory_overview` | 96 s | passed: names the right branch |
+| AR · "ما المنتجات التي من المحتمل أن تنفد قريبًا في فرع الجامعة؟" | `identify_low_stock` | 120 s | passed: answer in Arabic |
+| EN · "What should we transfer between branches this week?" | `suggest_stock_transfer` | 79 s | passed |
+| EN · "Compare sales between branches for the last 30 days" | `get_branch_sales` | 95 s | passed |
+| EN · "Which products have increasing demand?" | `get_demand_forecast` | 99 s | passed |
+
+The model chose a fitting tool in every scenario. The checks are automatic (right tool, cards or
+tables present, budget respected, Arabic reply, correct branch name); the full replies are in the
+JSON written by `--out`.
+Times include loading the tool results into the model; the first message after start-up also waits
+for the warm-up (about 40 s).
 
 ## 11. Known limitations and next steps
 
@@ -474,7 +510,7 @@ Every AI component is free and open source and runs on your own hardware.
 
 | Proposed technology (first version) | Paid or free? | Free alternative | Final choice |
 |---|---|---|---|
-| Claude API (`claude-opus-5-5`) for both agents | Paid per token | Local open-weight LLM | **Qwen3 (Apache-2.0) via Ollama (MIT)**, `qwen3:4b-instruct` by default |
+| Claude API (`claude-opus-5-5`) for both agents | Paid per token | Local open-weight LLM | **Qwen3 via Ollama (MIT)**, `qwen3:4b-instruct` by default; `gemma4:e4b` with 16 GB+ RAM (both Apache-2.0). Six models compared in section 9.1. |
 | `@anthropic-ai/sdk` | Free library for a paid API | Plain `fetch` to Ollama's local HTTP API | **Removed** |
 | Anthropic prompt caching / refusal fallbacks | Paid API features | Ollama's automatic prompt-prefix reuse | Ollama built-in |
 | Ollama cloud models / web search | Optional paid service | Local models only | **Disabled** (`OLLAMA_NO_CLOUD=1`; backend refuses `*-cloud` models) |

@@ -1,6 +1,3 @@
-# Extra libraries used only by scripts/evaluate.py --classical / --prophet (offline comparison)
+# Extra library used only by scripts/evaluate.py --classical (offline comparison)
 -r requirements.txt
 statsmodels==0.15.0
-pandas==3.1.0
-prophet==1.5.0
-cmdstanpy==1.3.0

@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.features import FeatureSpace  # noqa: E402
 from app.forecaster import (_candidates, build_samples, build_series, metrics, run_forecast, split,  # noqa: E402
                             uncensored)
+from app.prophet_model import fit_path, fit_task  # noqa: E402
 from app.schemas import ForecastRequest  # noqa: E402
 
 
@@ -48,22 +49,6 @@ def stockout_ablation(series, fs, horizon, start, total, model_name):
         pred = np.clip(model.predict(np.asarray(rows, dtype=float)), 0, None) * horizon
         out[label] = metrics(np.asarray(actual), pred)
     return out
-
-
-def _prophet_one(task):
-    """Fit Prophet on one series up to `origin` (sold-out days left out) and return the mean daily
-    forecast for the next `horizon` days. Top-level so it can run in a worker process."""
-    import logging
-    import pandas as pd
-    from prophet import Prophet
-    logging.getLogger("cmdstanpy").setLevel(logging.ERROR)
-    logging.getLogger("prophet").setLevel(logging.ERROR)
-    start, days, sales, origin, horizon = task
-    df = pd.DataFrame({"ds": pd.to_datetime(start) + pd.to_timedelta(days, unit="D"), "y": sales})
-    m = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=False)
-    m.fit(df)
-    fut = pd.DataFrame({"ds": pd.to_datetime(start) + pd.to_timedelta(np.arange(origin + 1, origin + horizon + 1), unit="D")})
-    return max(0.0, float(m.predict(fut)["yhat"].clip(lower=0).mean()))
 
 
 def weekly_rates(s, origin: int, weeks: int = 104) -> np.ndarray:
@@ -121,14 +106,11 @@ def classical_comparison(series, fs, horizon, start, total, ml_name, max_prophet
         rng = np.random.default_rng(seed)
         size = idx.size if max_prophet < 0 else min(max_prophet, idx.size)
         sub = np.sort(rng.choice(np.arange(idx.size), size=size, replace=False))
-        tasks = []
-        for j in sub:
-            s, o = by_key[keys[idx[j]]], int(origins[idx[j]])
-            days = np.arange(s.first_listed, o + 1)
-            keep = s.avail[days] > 0  # sold-out days are left out, not counted as zero demand
-            tasks.append((start, days[keep], s.sales[days][keep], o, horizon))
+        # the same Prophet set-up as the service (app/prophet_model.py): in-stock days only
+        tasks = [fit_task(by_key[keys[idx[j]]], int(origins[idx[j]]), horizon, start) for j in sub]
         with ProcessPoolExecutor(max_workers=workers) as pool:
-            p_pred = list(pool.map(_prophet_one, tasks, chunksize=8))
+            paths = list(pool.map(fit_path, tasks, chunksize=8))
+        p_pred = [float(p.mean()) if p is not None else float(ma_pred[j]) for p, j in zip(paths, sub)]
         yy = y[idx][sub] * horizon
         out["prophet_subset"] = {"samples": int(sub.size), "models": {
             "prophet": metrics(yy, np.asarray(p_pred) * horizon),
@@ -174,21 +156,32 @@ def main() -> None:
             lines.append("")
         lines += ["| Model | MAE | RMSE | WAPE | MAPE (demand ≥ 5) | Bias |", "|---|---:|---:|---:|---:|---:|"]
         base = next((c for c in h["candidates"] if c["name"] == "moving_average_28d"), None)
+        pct = lambda v: "—" if v is None else f"{100 * v:.1f} %"
         for c in sorted(h["candidates"], key=lambda c: c["mae"]):
             mark = " ✅" if c["name"] == h["selectedModel"] else ""
-            pct = lambda v: "—" if v is None else f"{100 * v:.1f} %"
-            lines.append(f"| {c['label']}{mark} | {c['mae']:.2f} | {c['rmse']:.2f} | {pct(c['wape'])} | {pct(c['mape'])} | {pct(c['bias'])} |")
-        if base and h["candidates"]:
-            best = min(h["candidates"], key=lambda c: c["mae"])
-            lines += ["", f"Improvement of the selected model over the 28-day moving average: "
-                          f"{100 * (1 - best['mae'] / base['mae']):.1f} % lower MAE."]
+            note = " ¹" if c.get("scoredOn") else ""
+            lines.append(f"| {c['label']}{note}{mark} | {c['mae']:.2f} | {c['rmse']:.2f} | {pct(c['wape'])} | {pct(c['mape'])} | {pct(c['bias'])} |")
+        sel = next((c for c in h["candidates"] if c["name"] == h["selectedModel"]), None)
+        so = next((c["scoredOn"] for c in h["candidates"] if c.get("scoredOn")), None)
+        if so:
+            lines += ["", f"¹ Scored on the {so['samples']} test samples of {so['testDates']} test forecast dates (one Prophet fit "
+                          f"per series and date). On the same samples: {so['comparedWith']} MAE {so['comparedMae']:.2f}, "
+                          f"28-day moving average MAE {so['baselineMae']:.2f}. Prophet is selected only if it beats the best "
+                          "ML model on these samples."]
+        if sel and base:
+            if sel.get("scoredOn") and sel["scoredOn"].get("baselineMae"):
+                gain = 1 - sel["mae"] / sel["scoredOn"]["baselineMae"]
+            else:
+                gain = 1 - sel["mae"] / base["mae"]
+            lines += ["", f"Improvement of the selected model over the 28-day moving average: {100 * gain:.1f} % lower MAE."]
         if h["featureImportance"]:
             lines += ["", "Top features: " + ", ".join(f"{f['feature']} ({f['importance']:.2f})" for f in h["featureImportance"][:6])]
         for w in h["warnings"]:
             lines += ["", f"> ⚠️ {w}"]
+        ml_models = [c for c in h["candidates"] if c["name"] not in ("prophet", "moving_average_28d", "seasonal_naive")]
+        ml_name = min(ml_models, key=lambda c: c["mae"])["name"] if ml_models else "gradient_boosting"
         if has_latent and h["status"] == "ok":
-            ab = stockout_ablation(series, fs, h["horizonDays"], start, total, h["selectedModel"]
-                                   if h["selectedModel"] not in ("moving_average_28d", "seasonal_naive") else "gradient_boosting")
+            ab = stockout_ablation(series, fs, h["horizonDays"], start, total, ml_name)
             if ab:
                 a, n = ab["stockout_aware"], ab["naive_zero_demand"]
                 lines += ["", "Stockout handling, scored against the simulated **true** demand (incl. demand lost to stockouts):", "",
@@ -196,7 +189,6 @@ def main() -> None:
                           f"| Stockout-aware (in-stock days only) | {a['mae']:.2f} | {100 * a['bias']:.1f} % |",
                           f"| Naive (sold-out days = zero demand) | {n['mae']:.2f} | {100 * n['bias']:.1f} % |"]
         if (args.classical or args.prophet) and h["status"] == "ok":
-            ml_name = h["selectedModel"] if h["selectedModel"] not in ("moving_average_28d", "seasonal_naive") else "gradient_boosting"
             n_prophet = args.prophet if not args.prophet_horizons or h["horizonDays"] in args.prophet_horizons else 0
             cc = classical_comparison(series, fs, h["horizonDays"], start, total, ml_name, n_prophet, workers=args.workers)
             label = {c.name: c.label for c in _candidates()}

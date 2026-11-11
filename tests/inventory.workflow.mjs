@@ -20,9 +20,16 @@ ok('status: AI service reachable + data source found', r.data.aiService?.reachab
 r = await call('POST', '/forecasts/run', { token: admin, body: {} });
 ok('run forecast (7/30/90 days)', r.status === 201 && r.data.horizons.length === 3, r.data);
 for (const h of r.data.horizons || []) {
-  const base = h.candidates.find((c) => c.name === 'moving_average_28d');
-  const best = h.candidates.find((c) => c.name === h.selectedModel);
-  ok(`${h.horizonDays}d: selected model has the lowest test MAE (${h.selectedModel} ${best?.mae} vs baseline ${base?.mae})`, best && h.candidates.every((c) => c.mae >= best.mae));
+  // ML models are scored on every test sample; Prophet and the ML + Prophet average on a subset, where
+  // they are compared with the best ML model on exactly the same samples (scoredOn.comparedMae)
+  const ml = h.candidates.filter((c) => !c.scoredOn);
+  const bestMl = ml.reduce((a, c) => (c.mae < a.mae ? c : a));
+  const extra = h.candidates.filter((c) => c.scoredOn);
+  const contender = extra.length ? extra.reduce((a, c) => (c.mae < a.mae ? c : a)) : null;
+  const expected = contender && contender.mae < contender.scoredOn.comparedMae ? contender : bestMl;
+  const sel = h.candidates.find((c) => c.name === h.selectedModel);
+  const baseMae = sel?.scoredOn ? sel.scoredOn.baselineMae : h.candidates.find((c) => c.name === 'moving_average_28d')?.mae;
+  ok(`${h.horizonDays}d: selected model is the most accurate on the hold-out (${h.selectedModel} MAE ${sel?.mae} vs moving average ${baseMae})`, h.selectedModel === expected.name && sel.mae <= baseMae);
 }
 r = await call('GET', '/forecasts/latest?horizonDays=30&limit=5', { token: admin });
 ok('latest forecast rows with stock + replenishment', r.data.rows?.length === 5 && r.data.rows.every((x) => 'suggestedReplenishment' in x && 'shortageRisk' in x && x.low <= x.predictedDemand && x.predictedDemand <= x.high), r.data.rows?.[0]);

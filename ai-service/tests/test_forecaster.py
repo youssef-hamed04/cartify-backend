@@ -60,8 +60,33 @@ class ForecastTests(unittest.TestCase):
             self.assertGreaterEqual(f["high"], f["predicted"] - 1e-9)
         names = {c["name"] for c in h["candidates"]}
         self.assertIn(h["selectedModel"], names)
-        best = min(h["candidates"], key=lambda c: c["mae"])
-        self.assertEqual(best["name"], h["selectedModel"])
+        ml = [c for c in h["candidates"] if not c.get("scoredOn")]
+        best_ml = min(ml, key=lambda c: c["mae"])
+        extra = [c for c in h["candidates"] if c.get("scoredOn")]  # Prophet and the ML + Prophet average
+        if extra:  # scored on a subset of the test samples, compared with the best ML model on the same ones
+            self.assertEqual({c["name"] for c in extra}, {"prophet", "ml_prophet_average"})
+            self.assertTrue(all(c["scoredOn"]["comparedWith"] == best_ml["name"] for c in extra))
+            contender = min(extra, key=lambda c: c["mae"])
+            wins = contender["mae"] < contender["scoredOn"]["comparedMae"]
+            self.assertEqual(h["selectedModel"], contender["name"] if wins else best_ml["name"])
+        else:
+            self.assertEqual(h["selectedModel"], best_ml["name"])
+
+    def test_prophet_candidate_can_be_switched_off(self):
+        import os
+        from app import prophet_model
+        if not prophet_model.enabled():
+            self.skipTest("prophet not installed")
+        out = run_forecast(make_request())
+        self.assertTrue(out["prophet"]["used"])
+        self.assertIn("prophet", {c["name"] for c in out["horizons"][0]["candidates"]})
+        os.environ["FORECAST_PROPHET"] = "off"
+        try:
+            out = run_forecast(make_request())
+        finally:
+            del os.environ["FORECAST_PROPHET"]
+        self.assertFalse(out["prophet"]["used"])
+        self.assertNotIn("prophet", {c["name"] for c in out["horizons"][0]["candidates"]})
 
     def test_short_history_falls_back_to_baseline(self):
         out = run_forecast(make_request(days=70, horizon=30))
