@@ -34,6 +34,10 @@ console.log('     ', r.data.products.map((p) => `${p.name} $${p.price}`).join(' 
 const pids = r.data.products.map((p) => p.id);
 r = await run(shoppingTools, 'search_products', { keywords: ['zzqqxx'] }, guest);
 ok('search no match hint', r.data.totalMatches === 0 && r.data.hint);
+r = await run(shoppingTools, 'search_products', { keywords: ['smartwatch'], maxPrice: 600 }, guest);
+ok('"smartwatch" finds "Smart Watch …" (spacing ignored)', r.data.products.some((p) => /smart watch/i.test(p.name)), r.data.products.map((p) => p.name));
+r = await run(shoppingTools, 'search_products', { keywords: ['smart watch'] }, guest);
+ok('"smart watch" needs both words (no cameras or phones)', r.data.products.length > 0 && r.data.products.every((p) => /watch/i.test(`${p.name} ${p.description}`)), r.data.products.map((p) => p.name));
 r = await run(shoppingTools, 'search_products', { category: 'Electronics', sort: 'price_asc', limit: 3 }, guest);
 ok('browse category sorted', r.data.products.length === 3 && r.data.products[0].price <= r.data.products[1].price);
 r = await run(shoppingTools, 'get_product_details', { productId: pids[0] }, guest);

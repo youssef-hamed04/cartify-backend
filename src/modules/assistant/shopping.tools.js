@@ -132,12 +132,15 @@ export const shoppingTools = [
       const textOf = (p) => norm(`${p.name} ${p.brand} ${p.category} ${(p.tags || []).join(' ')} ${p.description}`);
       terms.forEach((t, i) => {
         const words = norm(t).split(/\s+/).filter((w) => w.length >= 3).map(stem);
+        // every word of a 1-2 word phrase ("smart watch" must not match a "Smart Lens Camera"),
+        // all but one word of a longer phrase
+        const need = words.length <= 2 ? words.length : words.length - 1;
         const scored = all.products.map((p) => {
           const tx = textOf(p);
           const whole = squash(tx).includes(squash(stem(t)));
           const hits = words.filter((w) => tx.includes(w)).length;
           return { p, score: whole ? words.length + 1 : hits };
-        }).filter((m) => m.score > 0 && m.score >= Math.ceil(words.length / 2)).sort((a, b) => b.score - a.score);
+        }).filter((m) => m.score > 0 && m.score >= need).sort((a, b) => b.score - a.score);
         const seenIds = new Set(pages[i].products.map((p) => String(p._id)));
         pages[i] = { products: [...pages[i].products, ...scored.map((m) => m.p).filter((p) => !seenIds.has(String(p._id)))] };
       });
