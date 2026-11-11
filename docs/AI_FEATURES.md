@@ -369,25 +369,28 @@ No GPU is required. Measured on the development machine (4-core Intel Xeon 2.1 G
 | `gemma4:e4b` (Gemma 4 E4B, Apache-2.0) | 6.6 GB | 7.8 GB | 66 / 4.9 tokens/s | 21 / 22¹; median **19 s**, slowest 70 s: the fastest end to end (shorter answers) |
 | `qwen3.5:4b` (Apache-2.0) | 3.3 GB | 4.8 GB | 73 / 6.8 tokens/s | 21 / 22²; median 50 s, slowest 89 s |
 | `qwen3:8b` (Apache-2.0) | 5.2 GB | ~6.8 GB | 43 / 4.1 tokens/s | 10 / 11³; median 60 s, slowest 274 s |
-| `qwen3:1.7b` (Apache-2.0) | 1.4 GB | ~2 GB | 175 / 14 tokens/s | 0 / 11: wrote tool calls as plain text instead of calling the tools |
-| `qwen3:4b` (the tag is the *Thinking-2507* build) | 2.5 GB | ~4 GB | ~77 / 7.5 tokens/s | always reasons at length first: the first answer did not finish within 4 minutes |
+| `qwen3:1.7b` (Apache-2.0) | 1.4 GB | — | 175 / 14 tokens/s | 0 / 11: wrote tool calls as plain text instead of calling the tools |
+| `qwen3:4b` (the tag is the *Thinking-2507* build) | 2.5 GB | — | ~77 / 7.5 tokens/s | always reasons at length first: the first answer did not finish within 4 minutes |
 
 "Read" is prompt processing, "write" is generation, measured with a 1,100-token prompt; RAM is the
 model process's resident memory after the 11 scenarios (8,192-token context). Agent result = the 11
-English/Arabic scenarios of `npm run test:ai-live` (section 10).
-¹ Once asked which colour to add instead of preparing the cart item. The prompt tells it to do that
+English/Arabic scenarios of `npm run test:ai-live` (section 10); "~" marks Ollama's own memory figure.
+
+- ¹ Once asked which colour to add instead of preparing the cart item. The prompt tells it to do that
 for products with several colours, so the test now accepts it (it would be 22 / 22).
-² Once asked a question instead of calling `suggest_stock_transfer`; the prompt now says to answer broad
-questions with the tools' defaults.
-³ Measured before two fixes: it passed invented product ids to `compare_products`, which now also
+- ² Once asked a question instead of calling `suggest_stock_transfer`. After a prompt rule to answer broad
+questions with the tools' defaults, 3 repeats of that question gave: one good answer, one question
+again, and one answer after calling the tool 4 times (314 s). `qwen3:4b-instruct` answered it correctly
+in all 4 runs.
+- ³ Measured before two fixes: it passed invented product ids to `compare_products`, which now also
 accepts product names and tells the model to search first. Removed afterwards to free disk space.
 
 **Recommendation:**
 
 | Your machine | Model | What to expect |
 |---|---|---|
-| 8 GB RAM, 4+ CPU cores, no GPU (laptop / small VPS) | **`qwen3:4b-instruct`** (default) | Passed every scenario in English and Arabic; about 10–60 s per shopping answer and 1.5–2 min per inventory answer on 4 cores. More cores = faster. |
-| 16 GB RAM or more, CPU only | **`gemma4:e4b`** | About 3× faster answers in our test (median 19 s); needs about 8 GB free RAM. |
+| 8 GB RAM, 4+ CPU cores, no GPU (laptop / small VPS) | **`qwen3:4b-instruct`** (default) | Passed every scenario in English and Arabic; about 10–60 s per shopping answer and 80–120 s per inventory answer on 4 cores. More cores = faster. |
+| 16 GB RAM or more, CPU only | **`gemma4:e4b`** | 2–3× faster answers in our tests (median 19–32 s); needs about 8 GB free RAM. |
 | Apple Silicon (M1+) or an NVIDIA GPU with 8 GB+ VRAM | `gemma4:e4b`, `qwen3:8b` or `qwen3.5:4b` | A few seconds per answer. Run `npm run test:ai-live` and keep the model that passes the most scenarios on your data. |
 | Less than 8 GB RAM | — | Smaller models (`qwen3:1.7b`) did not call the tools, so the agents would not work. Run Ollama on another machine on your network and set `OLLAMA_URL`. |
 
@@ -495,13 +498,16 @@ for the warm-up (about 40 s).
 
 ## 11. Known limitations and next steps
 
-- **Speed on a CPU.** A local model on a 4-core CPU takes about 15–60 s per shopping answer and
-  1.5–2 min per inventory answer. That is acceptable for a demo or a small shop; for many customers at
+- **Speed on a CPU.** With the default model, a 4-core CPU takes about 10–60 s per shopping answer
+  and 80–120 s per inventory answer (`gemma4:e4b`: about 10–30 s and 50–70 s, with 16 GB RAM). That is acceptable for a demo or a small shop; for many customers at
   once, run Ollama on a machine with a GPU or Apple Silicon (answers in seconds) and raise
   `OLLAMA_MAX_CONCURRENT`. There is still no per-request fee; the cost is hardware and electricity.
 - **Small-model quality.** A 4B model sometimes picks a less helpful tool or mixes languages. The
   server limits the damage: tool inputs are validated, made-up ids are rejected, cards only show real
   catalog data, and nothing is added or moved without a human pressing Confirm/Approve.
+- **Prophet run time grows with the catalog.** It fits one model per product-location (about 1,800
+  fits for 180 series per run, about 1 minute on 4 cores). With thousands of products, lower
+  `FORECAST_PROPHET_EVAL_DATES`, run forecasts at night, or set `FORECAST_PROPHET=off`.
 - **Synthetic data.** All forecast accuracy figures come from simulated sales. Real accuracy will be
   known only after several months of real orders. Yearly seasonality needs about 2 years of history.
 - **Branch stock is per product, not per colour,** and is separate from the online store's variant
