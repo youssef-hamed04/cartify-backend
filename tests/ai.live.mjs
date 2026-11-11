@@ -49,7 +49,8 @@ const c1 = await scenario('EN · search with a budget', guest, '/assistant/chat'
   'all within budget': (c) => products(c).every((p) => p.price <= 200),
 });
 await scenario('EN · add to cart needs confirmation', guest, '/assistant/chat', 'Add the first one to my cart please', c1, {
-  'prepared add_to_cart': (c) => c.blocks.some((b) => b.type === 'confirm_action'),
+  // the prompt asks for the colour when a product has several, so a colour question is also correct
+  'prepared add_to_cart or asked for the colour': (c) => c.blocks.some((b) => b.type === 'confirm_action') || (/colou?r/i.test(c.text) && c.text.includes('?')),
   'cart unchanged before Confirm': async () => (await guest.req('GET', '/cart/quantity')).data.totalQuantity === 0,
 });
 await scenario('EN · compare two products', guest, '/assistant/chat', 'Compare the Ghost Audio Elite with the Soundcore R50i', null, {
