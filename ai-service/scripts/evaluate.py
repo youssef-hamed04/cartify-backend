@@ -166,8 +166,8 @@ def main() -> None:
         if so:
             lines += ["", f"¹ Scored on the {so['samples']} test samples of {so['testDates']} test forecast dates (one Prophet fit "
                           f"per series and date). On the same samples: {so['comparedWith']} MAE {so['comparedMae']:.2f}, "
-                          f"28-day moving average MAE {so['baselineMae']:.2f}. Prophet is selected only if it beats the best "
-                          "ML model on these samples."]
+                          f"28-day moving average MAE {so['baselineMae']:.2f}. Prophet or the average is selected only if it "
+                          "beats the best ML model on these samples."]
         if sel and base:
             if sel.get("scoredOn") and sel["scoredOn"].get("baselineMae"):
                 gain = 1 - sel["mae"] / sel["scoredOn"]["baselineMae"]
@@ -193,7 +193,7 @@ def main() -> None:
             cc = classical_comparison(series, fs, h["horizonDays"], start, total, ml_name, n_prophet, workers=args.workers)
             label = {c.name: c.label for c in _candidates()}
             label.update({"statsmodels_exponential_smoothing": "Exponential smoothing, damped trend (statsmodels, per series)",
-                     "prophet": "Prophet (per series, yearly + weekly seasonality)",
+                     "prophet": "Prophet (per series: trend + yearly and weekly seasonality)",
                      "average_ml_prophet": f"Average of {label.get(ml_name, ml_name)} and Prophet"})
             for title, block in (("Classical time-series models on the same hold-out samples", cc),
                                  ("Prophet on " + ("all" if cc.get("prophet_subset", {}).get("samples") == cc["samples"] else "a random subset of the") + " hold-out samples", cc.get("prophet_subset"))):
