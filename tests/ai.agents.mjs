@@ -1,10 +1,10 @@
-// End-to-end test of the agent endpoints against a scripted stand-in for the Messages API.
-// No API key or model calls: tests/mockAnthropic.mjs checks each request's shape and replies with
-// scripted tool calls, so the loop, tool validation, confirmations and authorization are exercised.
-//   IGNORE_NUDGE=1 node tests/mockAnthropic.mjs &
-//   ANTHROPIC_API_KEY=test ANTHROPIC_BASE_URL=http://127.0.0.1:9999 ASSISTANT_RATE_LIMIT_PER_MIN=100 npm start   (test DB!)
+// End-to-end test of the agent endpoints against a scripted stand-in for Ollama (fast, deterministic).
+// tests/mockOllama.mjs checks each request's shape and replies with scripted tool calls, so the loop,
+// tool validation, confirmations and authorization are exercised. The real model: tests/ai.live.mjs.
+//   IGNORE_NUDGE=1 node tests/mockOllama.mjs &
+//   OLLAMA_URL=http://127.0.0.1:11999 OLLAMA_MODEL=qwen3:4b-instruct ASSISTANT_RATE_LIMIT_PER_MIN=100 npm start   (test DB!)
 //   node tests/ai.agents.mjs
-const BASE = process.env.API_URL || 'http://localhost:3001', MOCK = process.env.MOCK_URL || 'http://127.0.0.1:9999';
+const BASE = process.env.API_URL || 'http://localhost:3001', MOCK = process.env.MOCK_URL || 'http://127.0.0.1:11999';
 let pass = 0, fail = 0;
 const ok = (name, cond, info = '') => { if (cond) { pass++; console.log('  ok  ', name); } else { fail++; console.log('  FAIL', name, typeof info === 'string' ? info : JSON.stringify(info).slice(0, 300)); } };
 
@@ -35,8 +35,8 @@ ok('product cards block from tools', r.data.reply.blocks?.[0]?.type === 'product
 ok('tool calls reported', JSON.stringify(r.data.toolCalls) === JSON.stringify(['search_products', 'show_products']), r.data.toolCalls);
 let c = await calls();
 ok('3 model calls, all valid', c.length === 3 && c.every((x) => x.errors.length === 0), c.map((x) => x.errors));
-ok('request uses model + fallbacks beta + cache + effort', c[0].model === 'claude-opus-5-5' && c[0].fallbacks === 'default' && /server-side-fallback-2026-07-01/.test(c[0].beta) && c[0].cache_control?.type === 'ephemeral' && c[0].output_config?.effort === 'medium', c[0]);
-ok('API key sent server-side (SDK 1.x: Authorization header)', c[0].authHeaders.includes('authorization') || c[0].apiKey === 'present', c[0].authHeaders);
+ok('local model request: thinking off, context size, keep-alive', c[0].think === false && c[0].numCtx >= 2048 && !!c[0].keepAlive, c[0]);
+ok('no credentials sent to the model server', c.every((x) => !x.authHeader));
 ok('shopping agent does not get inventory tools', !c[0].tools.some((t) => /stock|branch|inventory/.test(t)), c[0].tools);
 
 r = await g.req('POST', '/assistant/chat', { message: 'Great, add the first one', conversationId: conv });
@@ -73,17 +73,21 @@ ok('invalid tool args are rejected server-side and reported to the model', r.sta
 
 r = await g.req('POST', '/assistant/chat', { message: 'loop forever' });
 ok('tool loop is capped', r.status === 200 && /could not finish/i.test(r.data.reply.text), r.data);
-r = await g.req('POST', '/assistant/chat', { message: 'refuse-me' });
-ok('refusal handled', r.status === 200 && /can't help/i.test(r.data.reply.text), r.data);
+r = await g.req('POST', '/assistant/chat', { message: 'silent-reply' });
+ok('empty model reply handled', r.status === 200 && r.data.reply.text.length > 0, r.data);
+r = await g.req('POST', '/assistant/chat', { message: 'unknown tool please' });
+ok('unknown tool rejected, model told the valid tools', r.status === 200 && /Unknown tool/.test(r.data.reply.text), r.data.reply);
+r = await g.req('POST', '/assistant/chat', { message: 'name them please' });
+ok('products named in the reply are shown as catalog cards', r.status === 200 && r.data.reply.blocks[0]?.type === 'products' && r.data.reply.blocks[0].products.length === 2 && r.data.reply.blocks[0].fullProducts?.length === 2, r.data.reply);
 r = await g.req('POST', '/assistant/chat', { message: 'x'.repeat(2001) });
 ok('message length validated', r.status === 400);
 r = await g.req('POST', '/assistant/chat', { message: 'hi', conversationId: '000000000000000000000000' });
 ok('unknown conversation 404', r.status === 404);
 
-for (const [status, expect] of [[500, 503], [401, 503], [429, 429]]) {
+for (const [status, expect, label] of [['404', 503, 'model not downloaded'], ['500', 502, 'model server error'], ['close', 503, 'model server down']]) {
   await fetch(`${MOCK}/__fail?status=${status}`);
   r = await g.req('POST', '/assistant/chat', { message: 'hello' });
-  ok(`provider ${status} → ${expect} with a clean message`, r.status === expect && !/mock failure/.test(r.data.err || ''), r);
+  ok(`${label} → ${expect} with a clean message`, r.status === expect && !/pulling|ECONN|socket/i.test(r.data.err || ''), r);
 }
 
 console.log('inventory agent');

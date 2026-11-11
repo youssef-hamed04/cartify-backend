@@ -80,8 +80,8 @@ r = await inv('get_branch_sales', { days: 30 }); ok('branch sales', r.data.branc
 r = await inv('get_demand_forecast', { horizonDays: 30, trend: 'increasing', groupBy: 'product', sort: 'growth', limit: 5 }); ok('forecast increasing', r.data.rows.length > 0 && r.data.rows.every((x) => x.trend === 'increasing') && r.data.model.name);
 r = await inv('identify_low_stock', { branch: 'El-Mashaya Branch', limit: 5 }); ok('low stock', r.data.items.length > 0);
 r = await inv('identify_excess_stock', { limit: 5 }); ok('excess', r.data.items.length > 0);
-r = await inv('suggest_stock_transfer', { limit: 3 }); ok('suggest transfers', r.data.transfers.length > 0 && r.block.type === 'transfer_suggestions');
-const t = r.data.transfers[0];
+r = await inv('suggest_stock_transfer', { limit: 3 }); ok('suggest transfers', r.data.transfers.length > 0 && r.block.type === 'transfer_suggestions' && r.data.transfers[0].reasoning);
+const t = r.block.transfers[0]; // full detail is in the UI block; the model gets a compact version
 try { await inv('create_stock_transfer_request', { product: t.productId, fromBranch: t.from.branchId, toBranch: t.from.branchId, quantity: 1 }); ok('same-branch transfer rejected', false); } catch (e) { ok('same-branch transfer rejected', e.isToolError); }
 try { await inv('create_stock_transfer_request', { product: t.productId, fromBranch: t.from.branchId, toBranch: t.to.branchId, quantity: 9999 }); ok('oversized transfer rejected', false); } catch (e) { ok('oversized transfer rejected', e.isToolError, e.message); }
 r = await inv('create_stock_transfer_request', { product: t.productId, fromBranch: t.from.branchName, toBranch: t.to.branchName, quantity: t.quantity });

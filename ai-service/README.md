@@ -5,7 +5,7 @@ stays the main application: it reads the sales history from MongoDB, sends it he
 predictions. **This service has no database access** and keeps no data between requests.
 
 ```
-Node backend (MongoDB)  ──POST /forecast (daily sales per product × location)──▶  ai-service (scikit-learn)
+Node backend (MongoDB)  ──POST /forecast (daily sales per product × location)──▶  ai-service (scikit-learn, XGBoost)
                         ◀── predictions per horizon + model evaluation ─────────
 ```
 
@@ -19,9 +19,12 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt        # Windows: .venv\Scripts\pip install -r requirements.txt
 ```
 
-Dependencies (pinned in `requirements.txt`): `scikit-learn` and `numpy` for the models, `fastapi`,
-`uvicorn` and `pydantic` for the HTTP API with request validation. XGBoost is optional: install it
-and it is evaluated as an extra candidate automatically.
+Dependencies (pinned in `requirements.txt`, all free and open source): `scikit-learn`, `xgboost` and
+`numpy` for the models, `fastapi`, `uvicorn` and `pydantic` for the HTTP API with request
+validation. No paid service or API key is involved; everything runs on your machine.
+
+For the offline model comparison only (not needed to run the service):
+`.venv/bin/pip install -r requirements-eval.txt` adds `statsmodels`, `pandas` and `prophet`.
 
 ## Run
 
@@ -50,8 +53,9 @@ serving the last saved forecast and the admin page shows how to start it.
   target window, time on sale, the same weeks last year (rate and seasonal swing), category and
   location.
 - **Candidates:** 28-day moving average and same-weeks-last-year seasonal naive (baselines),
-  ridge linear regression, random forest, and histogram gradient boosting with a Poisson loss
-  (scikit-learn's equivalent of XGBoost).
+  ridge linear regression, random forest, histogram gradient boosting with a Poisson loss
+  (scikit-learn) and XGBoost with a Poisson objective. One global model is trained per horizon
+  across all products and locations, so new or slow products borrow strength from similar ones.
 - **Evaluation:** weekly forecast dates; the latest 25 % are the test set. Training samples whose
   target window reaches into the test period are dropped, so nothing from the test weeks leaks into
   training. Metrics are MAE, RMSE, WAPE, MAPE (only where demand ≥ 5 units, where it is meaningful)
@@ -72,7 +76,13 @@ ai-service/.venv/bin/python ai-service/scripts/evaluate.py forecast-dataset.json
 
 The report shows each model's test scores per horizon. With the synthetic demo dataset, which
 includes the simulated true demand, it also compares stockout-aware training with naive training
-(sold-out days counted as zero demand). See [EVALUATION.md](EVALUATION.md) for the latest run.
+(sold-out days counted as zero demand).
+
+Add `--classical` to also score per-series exponential smoothing (statsmodels, damped trend on
+weekly in-stock rates) and `--prophet N` to score Prophet on N random hold-out samples (one Prophet
+fit per sample, so it is slow). Both are scored on exactly the same hold-out samples as the ML
+models. They are not used by the service because the global ML models were more accurate (see
+[EVALUATION.md](EVALUATION.md) for the latest run).
 
 ## Tests
 

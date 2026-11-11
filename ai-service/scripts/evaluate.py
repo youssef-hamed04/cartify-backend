@@ -50,10 +50,90 @@ def stockout_ablation(series, fs, horizon, start, total, model_name):
     return out
 
 
+def weekly_rates(s, origin: int, weeks: int = 104) -> np.ndarray:
+    """In-stock demand rate (units/day) for each of the last `weeks` weeks before `origin`.
+    Sold-out weeks are filled from neighbouring weeks instead of counting as zero demand."""
+    vals = []
+    for w in range(weeks, 0, -1):
+        end = origin - (w - 1) * 7
+        if end - 6 < s.first_listed:
+            continue
+        r, cov = s.rate(end, 7)
+        vals.append(r if cov > 0 else np.nan)
+    y = np.asarray(vals, dtype=float)
+    if y.size and np.isnan(y).any():
+        idx = np.arange(y.size)
+        ok = ~np.isnan(y)
+        y = np.interp(idx, idx[ok], y[ok]) if ok.any() else np.zeros_like(y)
+    return y
+
+
+def classical_comparison(series, fs, horizon, start, total, ml_name, max_prophet, seed=0):
+    """Score per-series time-series models (statsmodels exponential smoothing, Prophet) on exactly
+    the same hold-out samples as the ML models, so the numbers are comparable."""
+    import warnings
+    warnings.filterwarnings("ignore")
+    from statsmodels.tsa.holtwinters import ExponentialSmoothing
+
+    X, y, origins, keys = build_samples(series, fs, horizon, start, total)
+    train, test, _ = split(origins, horizon)
+    idx = np.flatnonzero(test)
+    by_key = {s.key: s for s in series}
+    cand = {c.name: c for c in _candidates()}
+    ml = cand[ml_name].factory(fs)
+    ml.fit(X[train], y[train])
+    ml_pred = np.clip(ml.predict(X[idx]), 0, None)
+    ma_pred = cand["moving_average_28d"].factory(fs).predict(X[idx])
+
+    weeks_ahead = max(1, int(np.ceil(horizon / 7)))
+    ets_pred = []
+    for i in idx:
+        hist = weekly_rates(by_key[keys[i]], int(origins[i]))
+        if hist.size < 8:
+            ets_pred.append(ma_pred[len(ets_pred)])
+            continue
+        fit = ExponentialSmoothing(hist, trend="add", damped_trend=True, initialization_method="estimated").fit()
+        ets_pred.append(max(0.0, float(np.mean(fit.forecast(weeks_ahead)))))
+    out = {"samples": int(idx.size), "models": {
+        ml_name: metrics(y[idx] * horizon, ml_pred * horizon),
+        "moving_average_28d": metrics(y[idx] * horizon, ma_pred * horizon),
+        "statsmodels_exponential_smoothing": metrics(y[idx] * horizon, np.asarray(ets_pred) * horizon),
+    }}
+
+    if max_prophet:
+        import logging
+        import pandas as pd
+        from prophet import Prophet
+        logging.getLogger("cmdstanpy").setLevel(logging.ERROR)
+        logging.getLogger("prophet").setLevel(logging.ERROR)
+        rng = np.random.default_rng(seed)
+        sub = np.sort(rng.choice(np.arange(idx.size), size=min(max_prophet, idx.size), replace=False))
+        p_pred = []
+        for j in sub:
+            s, o = by_key[keys[idx[j]]], int(origins[idx[j]])
+            days = np.arange(s.first_listed, o + 1)
+            keep = s.avail[days] > 0  # sold-out days are left out, not counted as zero demand
+            df = pd.DataFrame({"ds": pd.to_datetime(start) + pd.to_timedelta(days[keep], unit="D"), "y": s.sales[days][keep]})
+            m = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=False)
+            m.fit(df)
+            fut = pd.DataFrame({"ds": pd.to_datetime(start) + pd.to_timedelta(np.arange(o + 1, o + horizon + 1), unit="D")})
+            p_pred.append(max(0.0, float(m.predict(fut)["yhat"].clip(lower=0).mean())))
+        yy = y[idx][sub] * horizon
+        out["prophet_subset"] = {"samples": int(sub.size), "models": {
+            "prophet": metrics(yy, np.asarray(p_pred) * horizon),
+            ml_name: metrics(yy, ml_pred[sub] * horizon),
+            "statsmodels_exponential_smoothing": metrics(yy, np.asarray(ets_pred)[sub] * horizon),
+            "moving_average_28d": metrics(yy, ma_pred[sub] * horizon),
+        }}
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("dataset")
     ap.add_argument("--markdown", help="also write the report to this Markdown file")
+    ap.add_argument("--classical", action="store_true", help="also score statsmodels exponential smoothing (pip install -r requirements-eval.txt)")
+    ap.add_argument("--prophet", type=int, default=0, metavar="N", help="also score Prophet on N random hold-out samples (slow: one fit per sample)")
     args = ap.parse_args()
     data = json.loads(Path(args.dataset).read_text())
     req = ForecastRequest(asOf=data["asOf"], horizons=data.get("horizons", [7, 30, 90]), series=data["series"])
@@ -101,6 +181,19 @@ def main() -> None:
                           "| Training data | MAE | Bias |", "|---|---:|---:|",
                           f"| Stockout-aware (in-stock days only) | {a['mae']:.2f} | {100 * a['bias']:.1f} % |",
                           f"| Naive (sold-out days = zero demand) | {n['mae']:.2f} | {100 * n['bias']:.1f} % |"]
+        if (args.classical or args.prophet) and h["status"] == "ok":
+            ml_name = h["selectedModel"] if h["selectedModel"] not in ("moving_average_28d", "seasonal_naive") else "gradient_boosting"
+            cc = classical_comparison(series, fs, h["horizonDays"], start, total, ml_name, args.prophet)
+            label = {c.name: c.label for c in _candidates()}
+            label.update({"statsmodels_exponential_smoothing": "Exponential smoothing, damped trend (statsmodels, per series)",
+                     "prophet": "Prophet (per series, yearly + weekly seasonality)"})
+            for title, block in (("Classical time-series models on the same hold-out samples", cc),
+                                 (f"Prophet on a random subset of the hold-out samples", cc.get("prophet_subset"))):
+                if not block:
+                    continue
+                lines += ["", f"{title} ({block['samples']} samples):", "", "| Model | MAE | RMSE | WAPE |", "|---|---:|---:|---:|"]
+                for name, m in sorted(block["models"].items(), key=lambda kv: kv[1]["mae"]):
+                    lines.append(f"| {label.get(name, name.replace('_', ' ').capitalize())} | {m['mae']:.2f} | {m['rmse']:.2f} | {100 * (m['wape'] or 0):.1f} % |")
         lines.append("")
 
     report = "\n".join(lines)
