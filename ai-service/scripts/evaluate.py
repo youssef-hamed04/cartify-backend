@@ -50,6 +50,22 @@ def stockout_ablation(series, fs, horizon, start, total, model_name):
     return out
 
 
+def _prophet_one(task):
+    """Fit Prophet on one series up to `origin` (sold-out days left out) and return the mean daily
+    forecast for the next `horizon` days. Top-level so it can run in a worker process."""
+    import logging
+    import pandas as pd
+    from prophet import Prophet
+    logging.getLogger("cmdstanpy").setLevel(logging.ERROR)
+    logging.getLogger("prophet").setLevel(logging.ERROR)
+    start, days, sales, origin, horizon = task
+    df = pd.DataFrame({"ds": pd.to_datetime(start) + pd.to_timedelta(days, unit="D"), "y": sales})
+    m = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=False)
+    m.fit(df)
+    fut = pd.DataFrame({"ds": pd.to_datetime(start) + pd.to_timedelta(np.arange(origin + 1, origin + horizon + 1), unit="D")})
+    return max(0.0, float(m.predict(fut)["yhat"].clip(lower=0).mean()))
+
+
 def weekly_rates(s, origin: int, weeks: int = 104) -> np.ndarray:
     """In-stock demand rate (units/day) for each of the last `weeks` weeks before `origin`.
     Sold-out weeks are filled from neighbouring weeks instead of counting as zero demand."""
@@ -68,7 +84,7 @@ def weekly_rates(s, origin: int, weeks: int = 104) -> np.ndarray:
     return y
 
 
-def classical_comparison(series, fs, horizon, start, total, ml_name, max_prophet, seed=0):
+def classical_comparison(series, fs, horizon, start, total, ml_name, max_prophet, seed=0, workers=1):
     """Score per-series time-series models (statsmodels exponential smoothing, Prophet) on exactly
     the same hold-out samples as the ML models, so the numbers are comparable."""
     import warnings
@@ -101,26 +117,22 @@ def classical_comparison(series, fs, horizon, start, total, ml_name, max_prophet
     }}
 
     if max_prophet:
-        import logging
-        import pandas as pd
-        from prophet import Prophet
-        logging.getLogger("cmdstanpy").setLevel(logging.ERROR)
-        logging.getLogger("prophet").setLevel(logging.ERROR)
+        from concurrent.futures import ProcessPoolExecutor
         rng = np.random.default_rng(seed)
-        sub = np.sort(rng.choice(np.arange(idx.size), size=min(max_prophet, idx.size), replace=False))
-        p_pred = []
+        size = idx.size if max_prophet < 0 else min(max_prophet, idx.size)
+        sub = np.sort(rng.choice(np.arange(idx.size), size=size, replace=False))
+        tasks = []
         for j in sub:
             s, o = by_key[keys[idx[j]]], int(origins[idx[j]])
             days = np.arange(s.first_listed, o + 1)
             keep = s.avail[days] > 0  # sold-out days are left out, not counted as zero demand
-            df = pd.DataFrame({"ds": pd.to_datetime(start) + pd.to_timedelta(days[keep], unit="D"), "y": s.sales[days][keep]})
-            m = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=False)
-            m.fit(df)
-            fut = pd.DataFrame({"ds": pd.to_datetime(start) + pd.to_timedelta(np.arange(o + 1, o + horizon + 1), unit="D")})
-            p_pred.append(max(0.0, float(m.predict(fut)["yhat"].clip(lower=0).mean())))
+            tasks.append((start, days[keep], s.sales[days][keep], o, horizon))
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            p_pred = list(pool.map(_prophet_one, tasks, chunksize=8))
         yy = y[idx][sub] * horizon
         out["prophet_subset"] = {"samples": int(sub.size), "models": {
             "prophet": metrics(yy, np.asarray(p_pred) * horizon),
+            "average_ml_prophet": metrics(yy, (ml_pred[sub] + np.asarray(p_pred)) / 2 * horizon),
             ml_name: metrics(yy, ml_pred[sub] * horizon),
             "statsmodels_exponential_smoothing": metrics(yy, np.asarray(ets_pred)[sub] * horizon),
             "moving_average_28d": metrics(yy, ma_pred[sub] * horizon),
@@ -133,7 +145,9 @@ def main() -> None:
     ap.add_argument("dataset")
     ap.add_argument("--markdown", help="also write the report to this Markdown file")
     ap.add_argument("--classical", action="store_true", help="also score statsmodels exponential smoothing (pip install -r requirements-eval.txt)")
-    ap.add_argument("--prophet", type=int, default=0, metavar="N", help="also score Prophet on N random hold-out samples (slow: one fit per sample)")
+    ap.add_argument("--prophet", type=int, default=0, metavar="N", help="also score Prophet on N random hold-out samples, or -1 for all (slow: one fit per sample)")
+    ap.add_argument("--prophet-horizons", type=int, nargs="*", metavar="H", help="only run Prophet for these horizons (default: all)")
+    ap.add_argument("--workers", type=int, default=1, help="parallel processes for the Prophet fits")
     args = ap.parse_args()
     data = json.loads(Path(args.dataset).read_text())
     req = ForecastRequest(asOf=data["asOf"], horizons=data.get("horizons", [7, 30, 90]), series=data["series"])
@@ -183,12 +197,14 @@ def main() -> None:
                           f"| Naive (sold-out days = zero demand) | {n['mae']:.2f} | {100 * n['bias']:.1f} % |"]
         if (args.classical or args.prophet) and h["status"] == "ok":
             ml_name = h["selectedModel"] if h["selectedModel"] not in ("moving_average_28d", "seasonal_naive") else "gradient_boosting"
-            cc = classical_comparison(series, fs, h["horizonDays"], start, total, ml_name, args.prophet)
+            n_prophet = args.prophet if not args.prophet_horizons or h["horizonDays"] in args.prophet_horizons else 0
+            cc = classical_comparison(series, fs, h["horizonDays"], start, total, ml_name, n_prophet, workers=args.workers)
             label = {c.name: c.label for c in _candidates()}
             label.update({"statsmodels_exponential_smoothing": "Exponential smoothing, damped trend (statsmodels, per series)",
-                     "prophet": "Prophet (per series, yearly + weekly seasonality)"})
+                     "prophet": "Prophet (per series, yearly + weekly seasonality)",
+                     "average_ml_prophet": f"Average of {label.get(ml_name, ml_name)} and Prophet"})
             for title, block in (("Classical time-series models on the same hold-out samples", cc),
-                                 (f"Prophet on a random subset of the hold-out samples", cc.get("prophet_subset"))):
+                                 ("Prophet on " + ("all" if cc.get("prophet_subset", {}).get("samples") == cc["samples"] else "a random subset of the") + " hold-out samples", cc.get("prophet_subset"))):
                 if not block:
                     continue
                 lines += ["", f"{title} ({block['samples']} samples):", "", "| Model | MAE | RMSE | WAPE |", "|---|---:|---:|---:|"]
