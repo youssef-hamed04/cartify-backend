@@ -30,14 +30,18 @@ npm start                # production
 
 ## 🤖 AI Features
 
-Three AI features extend the existing API (details, endpoints and examples in
+Three AI features extend the existing API, all built on **free, open-source, self-hosted** technology:
+no paid API, no API key, no subscription (details, setup and examples in
 [docs/AI_FEATURES.md](docs/AI_FEATURES.md)):
 
 | Feature | Where | Needs |
 |---|---|---|
-| **Demand forecasting** — ML model (gradient boosting, random forest, linear regression vs. baselines) predicting 7/30/90-day demand per product and branch, with replenishment suggestions | Admin → Demand Forecasting · `/forecasts` | Python AI service ([ai-service/README.md](ai-service/README.md)) |
-| **Branch & inventory intelligence** — branch stock, low/excess stock, transfer and reorder recommendations, stock movement approvals, and an **AI inventory agent** | Admin → Branch & Inventory · `/branches`, `/inventory`, `/assistant/inventory/*` | forecast (rules), Claude API key (agent) |
-| **Shopping assistant** — tool-using AI agent: product search, comparison, recommendations, cart (with confirmation), order tracking | Store chat button, mobile app · `/assistant/*` | Claude API key |
+| **Demand forecasting** — ML model (XGBoost, gradient boosting, random forest, linear regression vs. baselines; the most accurate wins) predicting 7/30/90-day demand per product and branch, with replenishment suggestions | Admin → Demand Forecasting · `/forecasts` | Python AI service ([ai-service/README.md](ai-service/README.md)) |
+| **Branch & inventory intelligence** — branch stock, low/excess stock, transfer and reorder recommendations, stock movement approvals, and an **AI inventory agent** | Admin → Branch & Inventory · `/branches`, `/inventory`, `/assistant/inventory/*` | forecast (rules), local LLM via Ollama (agent) |
+| **Shopping assistant** — tool-using AI agent: product search, comparison, recommendations, cart (with confirmation), order tracking | Store chat button, mobile app · `/assistant/*` | local LLM via Ollama |
+
+Local LLM: install [Ollama](https://ollama.com) and run `ollama pull qwen3:4b-instruct` (default, 8 GB+ RAM;
+`gemma4:e4b` is faster with 16 GB+ RAM). No GPU needed. See section 9 of the AI docs.
 
 ```bash
 npm run seed:ai-demo     # SYNTHETIC demo data: 4 sample Mansoura branches + 2 years of daily sales

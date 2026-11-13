@@ -1,0 +1,3 @@
+# Extra library used only by scripts/evaluate.py --classical (offline comparison)
+-r requirements.txt
+statsmodels==0.15.0

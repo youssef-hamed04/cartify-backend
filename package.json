@@ -12,13 +12,13 @@
     "test:api": "node tests/api.regression.mjs",
     "test:inventory": "node tests/inventory.workflow.mjs",
     "test:ai-tools": "node tests/ai.tools.mjs",
-    "test:agents": "node tests/ai.agents.mjs && node tests/ai.mobileClient.mjs"
+    "test:agents": "node tests/ai.agents.mjs && node tests/ai.mobileClient.mjs",
+    "test:ai-live": "node tests/ai.live.mjs"
   },
   "engines": {
     "node": ">=18.x"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^1.3.0",
     "@huggingface/transformers": "^4.3.2",
     "bcryptjs": "^2.4.3",
     "cloudinary": "^2.7.0",

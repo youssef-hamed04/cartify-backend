@@ -22,7 +22,7 @@ from sklearn.linear_model import Ridge
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from . import __version__
+from . import __version__, prophet_model
 from .features import (MIN_HISTORY_DAYS, MIN_TARGET_COVERAGE, FeatureSpace, Series, align, build_calendar,
                        training_origins)
 
@@ -102,7 +102,7 @@ def _candidates() -> list[Candidate]:
                                                                          max_leaf_nodes=31, min_samples_leaf=20,
                                                                          l2_regularization=1.0, random_state=RANDOM_STATE))),
     ]
-    try:  # optional: evaluated only when xgboost is installed (not a required dependency)
+    try:  # xgboost is in requirements.txt; skipped only if the install is broken
         from xgboost import XGBRegressor  # type: ignore
 
         cands.append(Candidate("xgboost", "XGBoost (Poisson objective)",
@@ -209,10 +209,36 @@ def _trend(pred_rate: float, recent: float) -> tuple[str, float | None]:
     return "stable", round(float(pct), 4)
 
 
+def _score_prophet(prophet, series, keys, y, origins, test, horizon, best_ml, baseline) -> list[dict]:
+    """Score Prophet, and the average of Prophet and the best ML model, on the test samples of a few test
+    forecast dates (one Prophet fit per series and date). The best ML model and the moving average are
+    scored on exactly the same samples, so all of them can be compared fairly."""
+    test_idx = np.flatnonzero(test)
+    dates = np.unique(origins[test_idx])
+    k = min(prophet_model.eval_dates(), dates.size)
+    picked = dates[np.unique(np.linspace(0, dates.size - 1, k).round().astype(int))]  # spread over the test period
+    sub = test_idx[np.isin(origins[test_idx], picked)]
+    by_key = {s.key: s for s in series}
+    p_rates = prophet.rates([by_key[keys[i]] for i in sub], origins[sub], horizon)
+    actual = y[sub] * horizon
+    pos = np.searchsorted(test_idx, sub)
+    ml_rates = best_ml["_pred"][pos]
+    avg_rates = (ml_rates + p_rates) / 2
+    scored_on = {"testDates": int(picked.size), "samples": int(sub.size), "comparedWith": best_ml["name"],
+                 "comparedMae": metrics(actual, ml_rates * horizon)["mae"],
+                 "baselineMae": metrics(actual, baseline["_pred"][pos] * horizon)["mae"] if baseline else None}
+    return [
+        {"name": "prophet", "label": prophet_model.LABEL, **metrics(actual, p_rates * horizon),
+         "_pred": p_rates, "_y": y[sub], "scoredOn": scored_on},
+        {"name": "ml_prophet_average", "label": f"Average of {best_ml['label']} and Prophet",
+         **metrics(actual, avg_rates * horizon), "_pred": avg_rates, "_y": y[sub], "scoredOn": scored_on},
+    ]
+
+
 def forecast_horizon(series: list[Series], fs: FeatureSpace, horizon: int, calendar_start: date,
-                     total_days: int) -> dict:
+                     total_days: int, prophet: "prophet_model.ProphetRunner | None" = None) -> dict:
     cands = _candidates()
-    X, y, origins, _ = build_samples(series, fs, horizon, calendar_start, total_days)
+    X, y, origins, keys = build_samples(series, fs, horizon, calendar_start, total_days)
     result: dict = {"horizonDays": horizon, "warnings": []}
     parts = split(origins, horizon) if len(y) else None
 
@@ -227,11 +253,20 @@ def forecast_horizon(series: list[Series], fs: FeatureSpace, horizon: int, calen
             m = metrics(actual, pred_rate * horizon)
             evaluated.append({"name": c.name, "label": c.label, **m, "_pred": pred_rate})
         best = min(evaluated, key=lambda e: e["mae"])
-        chosen = next(c for c in cands if c.name == best["name"])
+        y_best = y[test]
+        chosen = next(c for c in cands if c.name == best["name"])  # the ML model (alone or in the average)
+        if prophet is not None:
+            baseline = next((e for e in evaluated if e["name"] == "moving_average_28d"), None)
+            extra = _score_prophet(prophet, series, keys, y, origins, test, horizon, best, baseline)
+            evaluated += extra
+            # Prophet or the average wins only if it beats the best ML model on the same test samples
+            contender = min(extra, key=lambda e: e["mae"])
+            if contender["mae"] < contender["scoredOn"]["comparedMae"]:
+                best, y_best = contender, contender["_y"]
         p = best["_pred"]
         ok = p > 0.02
         if ok.sum() >= 10:
-            r = y[test][ok] / p[ok]
+            r = y_best[ok] / p[ok]
             ratios = (float(min(np.quantile(r, 0.1), 1.0)), float(max(np.quantile(r, 0.9), 1.0)))
         test_info = {
             "from": (calendar_start + timedelta(days=test_first + 1)).isoformat(),
@@ -243,24 +278,25 @@ def forecast_horizon(series: list[Series], fs: FeatureSpace, horizon: int, calen
         }
         result["status"] = "ok"
     else:
-        chosen = cands[0]
+        chosen, best = cands[0], {"name": cands[0].name, "label": cands[0].label}
         result["status"] = "baseline_only"
         result["warnings"].append(
             f"Not enough history for a {horizon}-day model evaluation (needs at least "
             f"{MIN_HISTORY_DAYS + horizon} days and enough in-stock weeks). The 28-day moving average is used "
             "and no accuracy is claimed.")
 
-    model = chosen.factory(fs)
-    if len(y):
-        model.fit(X, y)  # refit the chosen model on every sample, test period included
-
     last = total_days - 1
-    rows, keys_order = [], []
-    for s in series:
-        rows.append(fs.row(s, last, horizon, calendar_start))
-        keys_order.append(s)
-    P = np.asarray(rows, dtype=float)
-    pred_rates = np.clip(model.predict(P), 0, None) if len(rows) else np.array([])
+    keys_order = list(series)
+    model = None
+    if best["name"] != "prophet":
+        model = chosen.factory(fs)
+        if len(y):
+            model.fit(X, y)  # refit the ML model on every sample, test period included
+        P = np.asarray([fs.row(s, last, horizon, calendar_start) for s in keys_order], dtype=float)
+        pred_rates = np.clip(model.predict(P), 0, None) if len(keys_order) else np.array([])
+    if best["name"] in ("prophet", "ml_prophet_average"):  # one Prophet fit per series on all history
+        p_final = prophet.rates(keys_order, [last] * len(keys_order), horizon)
+        pred_rates = p_final if best["name"] == "prophet" else (pred_rates + p_final) / 2
     q10, q90 = ratios if ratios else (0.6, 1.5)
     if not ratios:
         result["warnings"].append("Prediction interval uses a default +/- range (not enough test data to calibrate it).")
@@ -295,13 +331,14 @@ def forecast_horizon(series: list[Series], fs: FeatureSpace, horizon: int, calen
         })
 
     result.update({
-        "selectedModel": chosen.name,
-        "selectedModelLabel": chosen.label,
-        "selectionRule": "lowest MAE on the time-based hold-out" if evaluated else "fallback (no evaluation possible)",
-        "candidates": [{k: v for k, v in e.items() if k != "_pred"} for e in evaluated],
+        "selectedModel": best["name"],
+        "selectedModelLabel": best["label"],
+        "selectionRule": ("lowest MAE on the time-based hold-out (Prophet and the average: compared with the best ML "
+                          "model on the same test samples)") if evaluated else "fallback (no evaluation possible)",
+        "candidates": [{k: v for k, v in e.items() if not k.startswith("_")} for e in evaluated],
         "test": test_info,
         "interval": {"lowRatio": round(q10, 4), "highRatio": round(q90, 4), "coverage": "10th-90th percentile"},
-        "featureImportance": feature_importance(model, fs.names) if len(y) else [],
+        "featureImportance": feature_importance(model, fs.names) if model is not None and len(y) else [],
         "forecasts": forecasts,
     })
     return result
@@ -313,7 +350,9 @@ def run_forecast(req) -> dict:
     total_days = build_calendar(calendar_start, req.asOf)
     series = build_series(req.series, calendar_start, total_days)
     fs = FeatureSpace(categories=sorted({s.category for s in series}), branches=sorted({s.branch_key for s in series}))
-    horizons = [forecast_horizon(series, fs, h, calendar_start, total_days) for h in req.horizons]
+    use_prophet = prophet_model.enabled()
+    prophet = prophet_model.ProphetRunner(calendar_start, max(req.horizons)) if use_prophet else None
+    horizons = [forecast_horizon(series, fs, h, calendar_start, total_days, prophet) for h in req.horizons]
     return {
         "serviceVersion": __version__,
         "asOf": req.asOf.isoformat(),
@@ -324,5 +363,6 @@ def run_forecast(req) -> dict:
         "target": "average daily demand over the horizon, measured on in-stock days only",
         "minTargetCoverage": MIN_TARGET_COVERAGE,
         "horizons": horizons,
+        "prophet": {"used": prophet is not None, "fits": prophet.fits if prophet else 0},
         "durationMs": int((time.time() - t0) * 1000),
     }

@@ -95,7 +95,7 @@ export const inventoryTools = [
       trend: { type: 'string', enum: ['increasing', 'decreasing', 'stable'] },
       risk: { type: 'string', enum: ['high', 'medium', 'low', 'none', 'at_risk'] },
       sort: { type: 'string', enum: ['risk', 'demand', 'growth', 'decline', 'replenishment', 'excess'], default: 'risk' },
-      limit: limit(10, 30),
+      limit: limit(8, 30),
     }),
     handler: async ({ horizonDays: h, branch, product, groupBy, trend, risk, sort, limit: l }, ctx) => {
       const [branchId, productId] = await Promise.all([resolveBranch(ctx, branch, { allowOnline: true }), product ? resolveProduct(ctx, product) : undefined]);
@@ -107,7 +107,7 @@ export const inventoryTools = [
           forecast: runInfo(d.run), horizonDays: d.horizon.horizonDays,
           model: { name: d.horizon.selectedModelLabel, testMAE: best?.mae, testWAPE: best?.wape, testPeriod: d.horizon.test },
           summary: d.summary, total: d.total,
-          rows: d.rows.map((r) => ({ productId: r.productId, productName: r.productName, branchId: r.branchId, branchName: r.branchName, predictedDemand: r.predictedDemand, range: [r.low, r.high], available: r.available, inbound: r.inbound, safetyStock: r.safetyStock, suggestedReplenishment: r.suggestedReplenishment, surplusUnits: r.surplusUnits, daysOfCover: r.daysOfCover, shortageRisk: r.shortageRisk, trend: r.trend, trendPct: r.trendPct, lowConfidence: r.lowConfidence })),
+          rows: d.rows.map((r) => ({ product: r.productName, branch: r.branchName, forecast: Math.round(r.predictedDemand), range: [Math.round(r.low), Math.round(r.high)], available: r.available, reorder: r.suggestedReplenishment, daysOfCover: r.daysOfCover, risk: r.shortageRisk, trend: r.trend, trendPct: r.trendPct == null ? null : Math.round(r.trendPct * 100) })),
         },
       };
     },
@@ -115,31 +115,37 @@ export const inventoryTools = [
   {
     name: 'identify_low_stock',
     description: 'Products likely to run out: high risk = runs out before a delivery could arrive (lead time), medium = will not cover the forecast horizon. Optionally for one branch.',
-    input_schema: obj({ branch: branchRef, horizonDays, limit: limit(10, 30) }),
+    input_schema: obj({ branch: branchRef, horizonDays, limit: limit(8, 30) }),
     handler: async ({ branch, horizonDays: h, limit: l }, ctx) => {
       const branchId = await resolveBranch(ctx, branch, { allowOnline: true });
       const d = await callApi(ctx.api, 'GET', '/inventory/low-stock', { query: { branchId, horizonDays: h, limit: l } });
-      return { data: { ...d, forecast: runInfo(d.forecast) } };
+      const items = (d.items || []).map((i) => ({ product: i.productName, branch: i.branchName, available: i.available, forecast: i.predictedDemand == null ? undefined : Math.round(i.predictedDemand), daysOfCover: i.daysOfCover, risk: i.shortageRisk, reorder: i.suggestedReplenishment, trend: i.trend }));
+      return { data: { method: d.method, forecast: runInfo(d.forecast), horizonDays: d.horizonDays, total: d.total, items } };
     },
   },
   {
     name: 'identify_excess_stock',
     description: 'Branches and products with spare stock beyond the forecast need plus safety stock (transferable), and long-term overstock.',
-    input_schema: obj({ branch: branchRef, horizonDays, limit: limit(10, 30) }),
+    input_schema: obj({ branch: branchRef, horizonDays, limit: limit(8, 30) }),
     handler: async ({ branch, horizonDays: h, limit: l }, ctx) => {
       const branchId = await resolveBranch(ctx, branch);
       const d = await callApi(ctx.api, 'GET', '/inventory/excess', { query: { branchId, horizonDays: h, limit: l } });
-      return { data: { ...d, forecast: runInfo(d.forecast) } };
+      const items = (d.items || []).map((i) => ({ product: i.productName, branch: i.branchName, available: i.available, forecast: Math.round(i.predictedDemand), safetyStock: i.safetyStock, spare: i.surplusUnits, overstock: i.excessUnits }));
+      return { data: { definition: d.definition, note: d.note, forecast: runInfo(d.forecast), horizonDays: d.horizonDays, byBranch: d.byBranch, total: d.total, items } };
     },
   },
   {
     name: 'suggest_stock_transfer',
     description: "Transfer and supplier-reorder suggestions computed by Cartify's stock rules from the forecast: which branch should send how many units to which branch, and what to reorder. Read-only.",
-    input_schema: obj({ product: productRef, branch: branchRef, horizonDays, limit: limit(8, 20) }),
+    input_schema: obj({ product: productRef, branch: branchRef, horizonDays, limit: limit(5, 20) }),
     handler: async ({ product, branch, horizonDays: h, limit: l }, ctx) => {
       const [productId, branchId] = await Promise.all([product ? resolveProduct(ctx, product) : undefined, resolveBranch(ctx, branch)]);
       const d = await callApi(ctx.api, 'GET', '/inventory/transfer-suggestions', { query: { productId, branchId, horizonDays: h, limit: l } });
-      const data = { forecast: runInfo(d.forecast), horizonDays: d.horizonDays, method: d.method, totalTransfers: d.totalTransfers, totalReplenishments: d.totalReplenishments, transfers: d.transfers, replenishments: d.replenishments, note: d.note };
+      const slimT = (t, i) => ({ product: t.productName, productId: t.productId, quantity: t.quantity, priority: t.priority, from: t.from.branchName, to: t.to.branchName,
+        destination: { available: t.to.available, forecast: Math.round(t.to.predictedDemand), safetyStock: t.to.safetyStock, shortage: t.to.shortage, daysOfCover: t.to.daysOfCover },
+        source: { available: t.from.available, forecast: Math.round(t.from.predictedDemand), spare: t.from.surplus }, ...(i < 2 ? { reasoning: t.reasoning } : {}) });
+      const slimR = (r) => ({ product: r.productName, branch: r.to.branchName, reorderQuantity: r.quantity, priority: r.priority, available: r.to.available, forecast: Math.round(r.to.predictedDemand) });
+      const data = { forecast: runInfo(d.forecast), horizonDays: d.horizonDays, method: d.method, totalTransfers: d.totalTransfers, totalReplenishments: d.totalReplenishments, transfers: (d.transfers || []).map(slimT), replenishments: (d.replenishments || []).slice(0, 5).map(slimR), note: d.note };
       return { data, block: d.transfers?.length ? { type: 'transfer_suggestions', horizonDays: d.horizonDays, transfers: d.transfers.slice(0, 6) } : undefined };
     },
   },
@@ -158,7 +164,7 @@ export const inventoryTools = [
       const summary = `Request transfer of ${quantity} × ${stock.product.name} from ${src.branchName} to ${dst.branchName}`;
       ctx.conversation.pendingActions.push({ actionId, type: 'create_stock_transfer_request', payload: { productId, sourceBranchId, destinationBranchId, quantity, reason: reason || 'Suggested by the inventory agent' }, summary, expiresAt: new Date(Date.now() + ACTION_TTL_MS) });
       return {
-        data: { status: 'awaiting_admin_confirmation', actionId, summary, note: 'Not created yet. Ask the admin to press Confirm on the card.' },
+        data: { status: 'awaiting_admin_confirmation', actionId, summary, note: 'NOT created yet. Say that you prepared the request and that the admin must press Confirm on the card. Never say it was created or that stock moved.' },
         block: { type: 'confirm_action', actionId, kind: 'create_stock_transfer_request', title: 'Create transfer request?', summary, product: { id: productId, name: stock.product.name }, from: { name: src.branchName, available: src.available }, to: { name: dst.branchName, available: dst.available }, quantity, reason: reason || '' },
       };
     },

@@ -6,9 +6,9 @@ import { AppError, asyncHandler } from '../../utils/error.js';
 import { sendSuccess } from '../../utils/response.js';
 import { runAgent } from './agentRunner.js';
 import { apiContextFromRequest, callApi } from './internalApi.js';
-import { isLlmConfigured } from './llmClient.js';
+import { createChat, llmStatus } from './llmClient.js';
 import { INVENTORY_SYSTEM_PROMPT, SHOPPING_SYSTEM_PROMPT } from './prompts.js';
-import { shoppingTools } from './shopping.tools.js';
+import { cardData, shoppingTools } from './shopping.tools.js';
 import { inventoryTools } from './inventory.tools.js';
 
 const AGENTS = {
@@ -27,21 +27,43 @@ async function findConversation(req, agent, id) {
   return conv;
 }
 
-const turnContext = (req) => {
+// Arabic letters in the message → ask for an Arabic reply explicitly (small local models otherwise
+// tend to switch to English when the tool data is English).
+const replyLanguage = (text) => (/[\u0600-\u06FF]/.test(text) ? 'Arabic' : 'English');
+
+const turnContext = (req, message) => {
   const today = new Date().toISOString().slice(0, 10);
   const who = req.user ? `signed in${req.user.firstName ? ` as ${req.user.firstName}` : ''}${req.user.role === 'admin' ? ' (administrator)' : ''}` : 'guest (not signed in)';
-  return `<turn_context>date: ${today}; ${who}</turn_context>`;
+  return `<turn_context>date: ${today}; ${who}; reply in ${replyLanguage(message)}</turn_context>`;
 };
 
 // What the UI shows for a turn: model text (AI-generated) and blocks (verified data from tools).
 const publicActions = (conv) => conv.pendingActions.filter((a) => a.status === 'pending' && a.expiresAt > new Date()).map((a) => ({ actionId: a.actionId, type: a.type, summary: a.summary, expiresAt: a.expiresAt }));
+
+// If the reply names products that the tools returned this turn but no product cards were shown,
+// show those products (live catalog data, in the order the reply mentions them).
+function attachMentionedProducts(result, seen) {
+  if (result.blocks.some((b) => ['products', 'comparison', 'confirm_action', 'cart', 'order'].includes(b.type)) || !seen.size) return;
+  const text = (result.text || '').toLowerCase();
+  const hits = [...seen.values()]
+    .map((p) => ({ p, at: text.indexOf(String(p.name).toLowerCase()) }))
+    .filter((h) => h.at >= 0)
+    .sort((a, b) => a.at - b.at)
+    .slice(0, 6)
+    .map((h) => h.p);
+  if (hits.length) result.blocks.unshift({ type: 'products', title: null, products: hits.map(cardData), fullProducts: hits });
+}
 
 const chat = (agent) => asyncHandler(async (req, res) => {
   await connectToDB();
   const message = String(req.body.message || '').trim();
   if (!message) throw new AppError('message is required', 400);
   if (message.length > MAX_MESSAGE_CHARS) throw new AppError(`message must be at most ${MAX_MESSAGE_CHARS} characters`, 400);
-  if (!isLlmConfigured()) throw new AppError('The AI assistant is not available right now.', 503);
+  const llm = await llmStatus();
+  if (!llm.available) {
+    console.warn(`[ai] assistant unavailable: ${llm.reason}`);
+    throw new AppError('The AI assistant is not available right now.', 503);
+  }
 
   const conv = req.body.conversationId
     ? await findConversation(req, agent, req.body.conversationId)
@@ -49,16 +71,17 @@ const chat = (agent) => asyncHandler(async (req, res) => {
   // Text that imitates the server's context block is neutralised
   const safe = message.replace(/<\/?\s*turn_context[^>]*>/gi, '');
   const { system, tools } = AGENTS[agent];
-  const runCtx = { api: apiContextFromRequest(req), conversation: conv, cache: {} };
+  const runCtx = { api: apiContextFromRequest(req), conversation: conv, cache: {}, seen: new Map() };
 
   let result;
   try {
-    result = await runAgent({ agent, system, tools, conversation: conv, userContent: [{ type: 'text', text: turnContext(req) }, { type: 'text', text: safe }], runCtx });
+    result = await runAgent({ agent, system, tools, conversation: conv, userText: `${turnContext(req, safe)}\n${safe}`, runCtx });
   } catch (err) {
     aiActionLogModel.create({ agent, conversationId: conv._id, userId: req.user?._id || null, sessionId: req.sessionId || null, tool: 'llm', kind: 'llm_error', ok: false, error: err.message }).catch(() => {});
     if (!conv.messages.length) await conv.deleteOne().catch(() => {});
     throw err;
   }
+  if (agent === 'shopping') attachMentionedProducts(result, runCtx.seen);
   const now = new Date();
   conv.transcript.push({ role: 'user', text: message, at: now }, { role: 'assistant', text: result.text, blocks: result.blocks, at: now });
   conv.markModified('transcript');
@@ -143,7 +166,7 @@ const decide = (agent, decision) => asyncHandler(async (req, res) => {
   // Tell the model what happened on the next turn (appended, never rewritten)
   await assistantConversationModel.updateOne({ _id: conv._id }, {
     $push: {
-      messages: { role: 'user', content: [{ type: 'text', text: `<turn_context>${note}</turn_context>` }] },
+      messages: { role: 'user', content: `<turn_context>${note}</turn_context>` },
       transcript: { role: 'system', text: outcome.message, ok, at: new Date() },
     },
   });
@@ -158,6 +181,28 @@ export const cancelShoppingAction = decide('shopping', 'cancel');
 export const confirmInventoryAction = decide('inventory', 'confirm');
 export const cancelInventoryAction = decide('inventory', 'cancel');
 
+// GET /assistant/status — whether the local model is running (details for admins only)
 export const status = asyncHandler(async (req, res) => {
-  sendSuccess(res, 200, 'success', { enabled: isLlmConfigured(), agents: { shopping: true, inventory: req.user?.role === 'admin' } });
+  const s = await llmStatus({ fresh: req.query.refresh === '1' });
+  const isAdmin = req.user?.role === 'admin';
+  sendSuccess(res, 200, 'success', {
+    enabled: s.available, model: s.model, agents: { shopping: true, inventory: isAdmin },
+    ...(isAdmin && !s.available ? { reason: s.reason } : {}),
+  });
 });
+
+// Load the local model and pre-process the shopping assistant's instructions + tool list once at
+// startup, so the first customer does not wait for it (Ollama reuses the processed prefix).
+export async function warmUpAssistant() {
+  if (process.env.OLLAMA_WARMUP === 'off' || process.env.VERCEL) return;
+  const s = await llmStatus({ fresh: true });
+  if (!s.available) { console.warn(`🤖  AI assistant not available yet: ${s.reason}`); return; }
+  const t0 = Date.now();
+  try {
+    const tools = shoppingTools.map(({ name, description, input_schema }) => ({ type: 'function', function: { name, description, parameters: input_schema } }));
+    await createChat({ system: SHOPPING_SYSTEM_PROMPT, tools, messages: [{ role: 'user', content: '<turn_context>date: warm-up</turn_context>\nhi' }], maxTokens: 1 });
+    console.log(`🤖  Local AI model ${s.model} ready (warm-up ${Math.round((Date.now() - t0) / 1000)} s)`);
+  } catch (err) {
+    console.warn('🤖  AI warm-up failed:', err.message);
+  }
+}

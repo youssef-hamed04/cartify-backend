@@ -21,6 +21,7 @@ import forecastRouter from './src/modules/forecast/forecast.routes.js';
 import branchRouter from './src/modules/branch/branch.routes.js';
 import inventoryRouter from './src/modules/inventory/inventory.routes.js';
 import assistantRouter from './src/modules/assistant/assistant.routes.js';
+import { warmUpAssistant } from './src/modules/assistant/assistant.controller.js';
 
 import { imageUploadLimiter } from './src/middleware/cameraRateLimit.js';
 import { warmUpVerification } from './src/utils/returnVerification.js';
@@ -82,6 +83,7 @@ const startServer = async () => {
     app.listen(PORT, () => console.log(`🚀  Cartify API → http://localhost:${PORT}`));
     warmUpVerification();
     startSnapshotSchedule();
+    warmUpAssistant();
   } catch (err) {
     console.error('Failed to start server:', err.message);
     process.exit(1);

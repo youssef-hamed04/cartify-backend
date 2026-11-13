@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.features import FeatureSpace  # noqa: E402
 from app.forecaster import (_candidates, build_samples, build_series, metrics, run_forecast, split,  # noqa: E402
                             uncensored)
+from app.prophet_model import fit_path, fit_task  # noqa: E402
 from app.schemas import ForecastRequest  # noqa: E402
 
 
@@ -50,10 +51,85 @@ def stockout_ablation(series, fs, horizon, start, total, model_name):
     return out
 
 
+def weekly_rates(s, origin: int, weeks: int = 104) -> np.ndarray:
+    """In-stock demand rate (units/day) for each of the last `weeks` weeks before `origin`.
+    Sold-out weeks are filled from neighbouring weeks instead of counting as zero demand."""
+    vals = []
+    for w in range(weeks, 0, -1):
+        end = origin - (w - 1) * 7
+        if end - 6 < s.first_listed:
+            continue
+        r, cov = s.rate(end, 7)
+        vals.append(r if cov > 0 else np.nan)
+    y = np.asarray(vals, dtype=float)
+    if y.size and np.isnan(y).any():
+        idx = np.arange(y.size)
+        ok = ~np.isnan(y)
+        y = np.interp(idx, idx[ok], y[ok]) if ok.any() else np.zeros_like(y)
+    return y
+
+
+def classical_comparison(series, fs, horizon, start, total, ml_name, max_prophet, seed=0, workers=1):
+    """Score per-series time-series models (statsmodels exponential smoothing, Prophet) on exactly
+    the same hold-out samples as the ML models, so the numbers are comparable."""
+    import warnings
+    warnings.filterwarnings("ignore")
+    from statsmodels.tsa.holtwinters import ExponentialSmoothing
+
+    X, y, origins, keys = build_samples(series, fs, horizon, start, total)
+    train, test, _ = split(origins, horizon)
+    idx = np.flatnonzero(test)
+    by_key = {s.key: s for s in series}
+    cand = {c.name: c for c in _candidates()}
+    ml = cand[ml_name].factory(fs)
+    ml.fit(X[train], y[train])
+    ml_pred = np.clip(ml.predict(X[idx]), 0, None)
+    ma_pred = cand["moving_average_28d"].factory(fs).predict(X[idx])
+
+    weeks_ahead = max(1, int(np.ceil(horizon / 7)))
+    ets_pred = []
+    for i in idx:
+        hist = weekly_rates(by_key[keys[i]], int(origins[i]))
+        if hist.size < 8:
+            ets_pred.append(ma_pred[len(ets_pred)])
+            continue
+        fit = ExponentialSmoothing(hist, trend="add", damped_trend=True, initialization_method="estimated").fit()
+        ets_pred.append(max(0.0, float(np.mean(fit.forecast(weeks_ahead)))))
+    out = {"samples": int(idx.size), "models": {
+        ml_name: metrics(y[idx] * horizon, ml_pred * horizon),
+        "moving_average_28d": metrics(y[idx] * horizon, ma_pred * horizon),
+        "statsmodels_exponential_smoothing": metrics(y[idx] * horizon, np.asarray(ets_pred) * horizon),
+    }}
+
+    if max_prophet:
+        from concurrent.futures import ProcessPoolExecutor
+        rng = np.random.default_rng(seed)
+        size = idx.size if max_prophet < 0 else min(max_prophet, idx.size)
+        sub = np.sort(rng.choice(np.arange(idx.size), size=size, replace=False))
+        # the same Prophet set-up as the service (app/prophet_model.py): in-stock days only
+        tasks = [fit_task(by_key[keys[idx[j]]], int(origins[idx[j]]), horizon, start) for j in sub]
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            paths = list(pool.map(fit_path, tasks, chunksize=8))
+        p_pred = [float(p.mean()) if p is not None else float(ma_pred[j]) for p, j in zip(paths, sub)]
+        yy = y[idx][sub] * horizon
+        out["prophet_subset"] = {"samples": int(sub.size), "models": {
+            "prophet": metrics(yy, np.asarray(p_pred) * horizon),
+            "average_ml_prophet": metrics(yy, (ml_pred[sub] + np.asarray(p_pred)) / 2 * horizon),
+            ml_name: metrics(yy, ml_pred[sub] * horizon),
+            "statsmodels_exponential_smoothing": metrics(yy, np.asarray(ets_pred)[sub] * horizon),
+            "moving_average_28d": metrics(yy, ma_pred[sub] * horizon),
+        }}
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("dataset")
     ap.add_argument("--markdown", help="also write the report to this Markdown file")
+    ap.add_argument("--classical", action="store_true", help="also score statsmodels exponential smoothing (pip install -r requirements-eval.txt)")
+    ap.add_argument("--prophet", type=int, default=0, metavar="N", help="also score Prophet on N random hold-out samples, or -1 for all (slow: one fit per sample)")
+    ap.add_argument("--prophet-horizons", type=int, nargs="*", metavar="H", help="only run Prophet for these horizons (default: all)")
+    ap.add_argument("--workers", type=int, default=1, help="parallel processes for the Prophet fits")
     args = ap.parse_args()
     data = json.loads(Path(args.dataset).read_text())
     req = ForecastRequest(asOf=data["asOf"], horizons=data.get("horizons", [7, 30, 90]), series=data["series"])
@@ -80,27 +156,52 @@ def main() -> None:
             lines.append("")
         lines += ["| Model | MAE | RMSE | WAPE | MAPE (demand ≥ 5) | Bias |", "|---|---:|---:|---:|---:|---:|"]
         base = next((c for c in h["candidates"] if c["name"] == "moving_average_28d"), None)
+        pct = lambda v: "—" if v is None else f"{100 * v:.1f} %"
         for c in sorted(h["candidates"], key=lambda c: c["mae"]):
             mark = " ✅" if c["name"] == h["selectedModel"] else ""
-            pct = lambda v: "—" if v is None else f"{100 * v:.1f} %"
-            lines.append(f"| {c['label']}{mark} | {c['mae']:.2f} | {c['rmse']:.2f} | {pct(c['wape'])} | {pct(c['mape'])} | {pct(c['bias'])} |")
-        if base and h["candidates"]:
-            best = min(h["candidates"], key=lambda c: c["mae"])
-            lines += ["", f"Improvement of the selected model over the 28-day moving average: "
-                          f"{100 * (1 - best['mae'] / base['mae']):.1f} % lower MAE."]
+            note = " ¹" if c.get("scoredOn") else ""
+            lines.append(f"| {c['label']}{note}{mark} | {c['mae']:.2f} | {c['rmse']:.2f} | {pct(c['wape'])} | {pct(c['mape'])} | {pct(c['bias'])} |")
+        sel = next((c for c in h["candidates"] if c["name"] == h["selectedModel"]), None)
+        so = next((c["scoredOn"] for c in h["candidates"] if c.get("scoredOn")), None)
+        if so:
+            lines += ["", f"¹ Scored on the {so['samples']} test samples of {so['testDates']} test forecast dates (one Prophet fit "
+                          f"per series and date). On the same samples: {so['comparedWith']} MAE {so['comparedMae']:.2f}, "
+                          f"28-day moving average MAE {so['baselineMae']:.2f}. Prophet or the average is selected only if it "
+                          "beats the best ML model on these samples."]
+        if sel and base:
+            if sel.get("scoredOn") and sel["scoredOn"].get("baselineMae"):
+                gain = 1 - sel["mae"] / sel["scoredOn"]["baselineMae"]
+            else:
+                gain = 1 - sel["mae"] / base["mae"]
+            lines += ["", f"Improvement of the selected model over the 28-day moving average: {100 * gain:.1f} % lower MAE."]
         if h["featureImportance"]:
             lines += ["", "Top features: " + ", ".join(f"{f['feature']} ({f['importance']:.2f})" for f in h["featureImportance"][:6])]
         for w in h["warnings"]:
             lines += ["", f"> ⚠️ {w}"]
+        ml_models = [c for c in h["candidates"] if not c.get("scoredOn") and c["name"] not in ("moving_average_28d", "seasonal_naive")]
+        ml_name = min(ml_models, key=lambda c: c["mae"])["name"] if ml_models else "gradient_boosting"
         if has_latent and h["status"] == "ok":
-            ab = stockout_ablation(series, fs, h["horizonDays"], start, total, h["selectedModel"]
-                                   if h["selectedModel"] not in ("moving_average_28d", "seasonal_naive") else "gradient_boosting")
+            ab = stockout_ablation(series, fs, h["horizonDays"], start, total, ml_name)
             if ab:
                 a, n = ab["stockout_aware"], ab["naive_zero_demand"]
                 lines += ["", "Stockout handling, scored against the simulated **true** demand (incl. demand lost to stockouts):", "",
                           "| Training data | MAE | Bias |", "|---|---:|---:|",
                           f"| Stockout-aware (in-stock days only) | {a['mae']:.2f} | {100 * a['bias']:.1f} % |",
                           f"| Naive (sold-out days = zero demand) | {n['mae']:.2f} | {100 * n['bias']:.1f} % |"]
+        if (args.classical or args.prophet) and h["status"] == "ok":
+            n_prophet = args.prophet if not args.prophet_horizons or h["horizonDays"] in args.prophet_horizons else 0
+            cc = classical_comparison(series, fs, h["horizonDays"], start, total, ml_name, n_prophet, workers=args.workers)
+            label = {c.name: c.label for c in _candidates()}
+            label.update({"statsmodels_exponential_smoothing": "Exponential smoothing, damped trend (statsmodels, per series)",
+                     "prophet": "Prophet (per series: trend + yearly and weekly seasonality)",
+                     "average_ml_prophet": f"Average of {label.get(ml_name, ml_name)} and Prophet"})
+            for title, block in (("Classical time-series models on the same hold-out samples", cc),
+                                 ("Prophet on " + ("all" if cc.get("prophet_subset", {}).get("samples") == cc["samples"] else "a random subset of the") + " hold-out samples", cc.get("prophet_subset"))):
+                if not block:
+                    continue
+                lines += ["", f"{title} ({block['samples']} samples):", "", "| Model | MAE | RMSE | WAPE |", "|---|---:|---:|---:|"]
+                for name, m in sorted(block["models"].items(), key=lambda kv: kv[1]["mae"]):
+                    lines.append(f"| {label.get(name, name.replace('_', ' ').capitalize())} | {m['mae']:.2f} | {m['rmse']:.2f} | {100 * (m['wape'] or 0):.1f} % |")
         lines.append("")
 
     report = "\n".join(lines)

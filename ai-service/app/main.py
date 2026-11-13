@@ -8,7 +8,7 @@ import os
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 
-from . import __version__
+from . import __version__, prophet_model
 from .forecaster import _candidates, run_forecast
 from .schemas import ForecastRequest
 
@@ -30,7 +30,8 @@ def require_key(x_ai_service_key: str = Header(default="")) -> None:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": __version__, "models": [c.name for c in _candidates()]}
+    extra = ["prophet", "ml_prophet_average"] if prophet_model.enabled() else []
+    return {"status": "ok", "version": __version__, "models": [c.name for c in _candidates()] + extra}
 
 
 @app.post("/forecast", dependencies=[Depends(require_key)])

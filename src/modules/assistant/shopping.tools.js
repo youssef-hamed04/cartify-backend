@@ -48,6 +48,24 @@ export function cardData(p) {
 
 const getProduct = async (api, id) => (await callApi(api, 'GET', `/products/${id}`)).product;
 
+// Resolve a product name (as the customer wrote it) to one catalog product via the public search API:
+// exact name first, then the closest containing match. Returns null when nothing matches.
+async function findByName(api, name) {
+  const sq = (t) => String(t || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+  const res = await callApi(api, 'GET', '/products', { query: { search: name, limit: 10 } }).catch(() => null);
+  const list = res?.products || [];
+  const q = sq(name);
+  const hit = list.find((p) => sq(p.name) === q) || list.find((p) => sq(p.name).includes(q) || q.includes(sq(p.name)));
+  return hit ? getProduct(api, hit._id).catch(() => hit) : null;
+}
+
+// Products returned by tools during this turn, so the products the reply recommends can be shown
+// as real catalog cards even if the model does not call show_products itself.
+const remember = (ctx, products) => {
+  if (!ctx.seen) return;
+  for (const p of products) if (p?._id) ctx.seen.set(String(p._id), p);
+};
+
 const STATUS_LABEL = { placed: 'Placed', confirmed: 'Confirmed', shipping: 'On the way', delivered: 'Delivered', cancelled: 'Cancelled', refunded: 'Refunded' };
 const compactOrder = (o) => ({
   orderNumber: o.randomId,
@@ -83,10 +101,49 @@ export const shoppingTools = [
       sort: { type: 'string', enum: ['relevance', 'price_asc', 'price_desc', 'rating', 'newest'], default: 'relevance' },
       limit: { type: 'integer', minimum: 1, maximum: 10, default: 6 },
     }),
-    handler: async ({ keywords = [], category, brand, minPrice, maxPrice, color, inStockOnly = true, sort = 'relevance', limit = 6 }, { api }) => {
-      const terms = [...new Set(keywords.map((k) => k.trim()).filter(Boolean))];
+    handler: async ({ keywords = [], category, brand, minPrice, maxPrice, color, inStockOnly = true, sort = 'relevance', limit = 6 }, ctx) => {
+      const { api } = ctx;
+      const isArabic = (t) => /[\u0600-\u06FF]/.test(t);
+      const allTerms = [...new Set(keywords.map((k) => k.trim()).filter(Boolean))];
+      if (allTerms.length && allTerms.every(isArabic)) {
+        throw new ToolError('The catalog is in English. Call search_products again with ENGLISH keywords (for example "سماعات" -> "headphones", "ساعة ذكية" -> "smart watch").');
+      }
+      const terms = allTerms.filter((t) => !isArabic(t));
+      const notes = [];
       const apiSort = sort === 'relevance' ? 'rating' : sort;
-      const pages = await Promise.all((terms.length ? terms : [null]).map((t) => callApi(api, 'GET', '/products', { query: { search: t || undefined, category, brand, color, sort: apiSort, limit: 100 } })));
+      const fetchSlice = (q, search) => callApi(api, 'GET', '/products', { query: { ...q, search, sort: apiSort, limit: 100 } });
+      // A brand/category/colour filter that matches nothing (e.g. brand "Ghost Audio" vs "Ghost") is dropped.
+      let filters = { category, brand, color };
+      let all = await fetchSlice(filters);
+      for (const key of ['brand', 'color', 'category']) {
+        if (!all.products.length && filters[key]) {
+          notes.push(`No products for ${key} "${filters[key]}", so that filter was ignored.`);
+          filters = { ...filters, [key]: undefined };
+          all = await fetchSlice(filters);
+        }
+      }
+      // 1) the store's own search (literal text match), one call per keyword
+      const pages = await Promise.all((terms.length ? terms : [null]).map((t) => fetchSlice(filters, t || undefined)));
+      // 2) plus looser matches: ignoring spaces/hyphens ("smartwatch" = "Smart Watch") and word by word
+      //    with simple singulars ("wireless headphones" -> "wireless", "headphone")
+      const norm = (t) => String(t || '').toLowerCase();
+      const squash = (t) => norm(t).replace(/[\s\-_]+/g, '');
+      const stem = (w) => (w.length > 4 ? w.replace(/(es|s)$/, '') : w);
+      const textOf = (p) => norm(`${p.name} ${p.brand} ${p.category} ${(p.tags || []).join(' ')} ${p.description}`);
+      terms.forEach((t, i) => {
+        const words = norm(t).split(/\s+/).filter((w) => w.length >= 3).map(stem);
+        // every word of a 1-2 word phrase ("smart watch" must not match a "Smart Lens Camera"),
+        // all but one word of a longer phrase
+        const need = words.length <= 2 ? words.length : words.length - 1;
+        const scored = all.products.map((p) => {
+          const tx = textOf(p);
+          const whole = squash(tx).includes(squash(stem(t)));
+          const hits = words.filter((w) => tx.includes(w)).length;
+          return { p, score: whole ? words.length + 1 : hits };
+        }).filter((m) => m.score > 0 && m.score >= need).sort((a, b) => b.score - a.score);
+        const seenIds = new Set(pages[i].products.map((p) => String(p._id)));
+        pages[i] = { products: [...pages[i].products, ...scored.map((m) => m.p).filter((p) => !seenIds.has(String(p._id)))] };
+      });
       const merged = new Map();
       pages.forEach((page) => page.products.forEach((p, i) => {
         const hit = merged.get(p._id) || { p, hits: 0, rank: i };
@@ -105,11 +162,13 @@ export const shoppingTools = [
         newest: (a, b) => a.rank - b.rank,
       };
       list.sort(by[sort]);
+      remember(ctx, list.slice(0, limit).map(({ p }) => p));
       return {
         data: {
           currency: CURRENCY, totalMatches: list.length, returned: Math.min(limit, list.length),
-          appliedFilters: { keywords: terms, category, brand, minPrice, maxPrice, color, inStockOnly },
+          appliedFilters: { keywords: terms, ...filters, minPrice, maxPrice, inStockOnly },
           products: list.slice(0, limit).map(({ p }) => compactProduct(p)),
+          ...(notes.length ? { notes } : {}),
           ...(list.length ? {} : { hint: 'Nothing matched. Try other keywords, a category, or a wider budget.' }),
         },
       };
@@ -119,8 +178,10 @@ export const shoppingTools = [
     name: 'get_product_details',
     description: 'Full details of one product: description, price, colours with stock, rating and the latest reviews.',
     input_schema: obj({ productId }, ['productId']),
-    handler: async ({ productId: id }, { api }) => {
+    handler: async ({ productId: id }, ctx) => {
+      const { api } = ctx;
       const [p, r] = await Promise.all([getProduct(api, id), callApi(api, 'GET', `/products/${id}/reviews`, { query: { limit: 3 } }).catch(() => ({ reviews: [] }))]);
+      remember(ctx, [p]);
       return {
         data: {
           currency: CURRENCY, product: compactProduct(p, { long: true }),
@@ -131,15 +192,28 @@ export const shoppingTools = [
   },
   {
     name: 'compare_products',
-    description: 'Compare 2 to 4 products side by side (price, discount, rating, brand, category, colours in stock, description). The customer sees the comparison as a table.',
-    input_schema: obj({ productIds: { type: 'array', items: productId, minItems: 2, maxItems: 4, uniqueItems: true } }, ['productIds']),
-    handler: async ({ productIds }, { api }) => {
-      const products = await Promise.all(productIds.map((id) => getProduct(api, id).catch(() => null)));
+    description: 'Compare 2 to 4 products side by side (price, discount, rating, brand, category, colours in stock, description). The customer sees the comparison as a table. Pass productIds from an earlier tool result, or productNames (exact catalog names) when you have no ids yet.',
+    input_schema: obj({
+      productIds: { type: 'array', items: productId, minItems: 2, maxItems: 4, uniqueItems: true },
+      productNames: { type: 'array', items: { type: 'string', minLength: 2, maxLength: 120 }, minItems: 2, maxItems: 4, uniqueItems: true, description: 'Product names as the customer or an earlier tool result wrote them' },
+    }),
+    handler: async ({ productIds, productNames }, ctx) => {
+      const { api } = ctx;
+      if (!productIds?.length && !productNames?.length) throw new ToolError('Pass productIds (from search_products) or productNames');
+      const products = productIds?.length
+        ? await Promise.all(productIds.map((id) => getProduct(api, id).catch(() => null)))
+        : await Promise.all(productNames.map((n) => findByName(api, n)));
+      const asked = productIds?.length ? productIds : productNames;
       const found = products.filter(Boolean);
-      if (found.length < 2) throw new ToolError('At least two of these products could not be found');
+      if (found.length < 2) {
+        throw new ToolError(productIds?.length
+          ? 'These product ids are not in the catalog. Never invent ids: call search_products with the product names first and use the ids it returns.'
+          : `Could not find at least two of these products: ${asked.join(', ')}. Call search_products to find the exact names.`);
+      }
+      remember(ctx, found);
       const rows = found.map((p) => ({ ...compactProduct(p, { long: true }), card: cardData(p) }));
       return {
-        data: { currency: CURRENCY, products: rows.map(({ card, ...r }) => r), missing: productIds.filter((id, i) => !products[i]) },
+        data: { currency: CURRENCY, products: rows.map(({ card, ...r }) => r), missing: asked.filter((_, i) => !products[i]) },
         block: { type: 'comparison', products: rows.map((r) => ({ ...r.card, inStockColors: r.colors.filter((c) => c.available > 0).map((c) => c.color), description: clip(r.description, 160) })) },
       };
     },
@@ -191,7 +265,7 @@ export const shoppingTools = [
       conversation.pendingActions.forEach((a) => { if (a.status === 'pending' && a.type === 'add_to_cart') a.status = 'expired'; });
       conversation.pendingActions.push({ actionId, type: 'add_to_cart', payload: { productId: id, productName: p.name, color: variant.color, quantity }, summary, expiresAt: new Date(Date.now() + ACTION_TTL_MS) });
       return {
-        data: { status: 'awaiting_customer_confirmation', actionId, summary, note: 'Not added yet. Tell the customer to press Confirm on the card.' },
+        data: { status: 'awaiting_customer_confirmation', actionId, summary, note: 'NOT added yet. Say that you prepared it and that the customer must press Confirm on the card to add it. Never say it was added.' },
         block: { type: 'confirm_action', actionId, kind: 'add_to_cart', title: 'Add to cart?', summary, product: cardData(p), color: variant.color, quantity, lineTotal: +(p.finalPrice * quantity).toFixed(2) },
       };
     },

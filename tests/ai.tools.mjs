@@ -34,12 +34,20 @@ console.log('     ', r.data.products.map((p) => `${p.name} $${p.price}`).join(' 
 const pids = r.data.products.map((p) => p.id);
 r = await run(shoppingTools, 'search_products', { keywords: ['zzqqxx'] }, guest);
 ok('search no match hint', r.data.totalMatches === 0 && r.data.hint);
+r = await run(shoppingTools, 'search_products', { keywords: ['smartwatch'], maxPrice: 600 }, guest);
+ok('"smartwatch" finds "Smart Watch …" (spacing ignored)', r.data.products.some((p) => /smart watch/i.test(p.name)), r.data.products.map((p) => p.name));
+r = await run(shoppingTools, 'search_products', { keywords: ['smart watch'] }, guest);
+ok('"smart watch" needs both words (no cameras or phones)', r.data.products.length > 0 && r.data.products.every((p) => /watch/i.test(`${p.name} ${p.description}`)), r.data.products.map((p) => p.name));
 r = await run(shoppingTools, 'search_products', { category: 'Electronics', sort: 'price_asc', limit: 3 }, guest);
 ok('browse category sorted', r.data.products.length === 3 && r.data.products[0].price <= r.data.products[1].price);
 r = await run(shoppingTools, 'get_product_details', { productId: pids[0] }, guest);
 ok('product details', r.data.product.id === pids[0] && Array.isArray(r.data.latestReviews));
 r = await run(shoppingTools, 'compare_products', { productIds: pids.slice(0, 3) }, guest);
 ok('compare + block', r.data.products.length === 3 && r.block.type === 'comparison');
+r = await run(shoppingTools, 'compare_products', { productNames: ['Ghost Audio Elite', 'soundcore r50i'] }, guest);
+ok('compare by product names', r.data.products.map((p) => p.name).join('|') === 'Ghost Audio Elite|Soundcore R50i' && r.block.products.length === 2);
+await run(shoppingTools, 'compare_products', { productIds: ['614785841234567890123456', '614785841234567890123457'] }, guest)
+  .then(() => ok('made-up ids rejected', false), (e) => ok('made-up ids rejected with a hint to search', /search_products/.test(e.message)));
 r = await run(shoppingTools, 'check_product_availability', { productId: pids[0], quantity: 2 }, guest);
 ok('availability', typeof r.data.canOrder === 'boolean' && r.data.colors.length > 0);
 const color = r.data.colors.find((c) => c.available > 2)?.color;
@@ -80,8 +88,8 @@ r = await inv('get_branch_sales', { days: 30 }); ok('branch sales', r.data.branc
 r = await inv('get_demand_forecast', { horizonDays: 30, trend: 'increasing', groupBy: 'product', sort: 'growth', limit: 5 }); ok('forecast increasing', r.data.rows.length > 0 && r.data.rows.every((x) => x.trend === 'increasing') && r.data.model.name);
 r = await inv('identify_low_stock', { branch: 'El-Mashaya Branch', limit: 5 }); ok('low stock', r.data.items.length > 0);
 r = await inv('identify_excess_stock', { limit: 5 }); ok('excess', r.data.items.length > 0);
-r = await inv('suggest_stock_transfer', { limit: 3 }); ok('suggest transfers', r.data.transfers.length > 0 && r.block.type === 'transfer_suggestions');
-const t = r.data.transfers[0];
+r = await inv('suggest_stock_transfer', { limit: 3 }); ok('suggest transfers', r.data.transfers.length > 0 && r.block.type === 'transfer_suggestions' && r.data.transfers[0].reasoning);
+const t = r.block.transfers[0]; // full detail is in the UI block; the model gets a compact version
 try { await inv('create_stock_transfer_request', { product: t.productId, fromBranch: t.from.branchId, toBranch: t.from.branchId, quantity: 1 }); ok('same-branch transfer rejected', false); } catch (e) { ok('same-branch transfer rejected', e.isToolError); }
 try { await inv('create_stock_transfer_request', { product: t.productId, fromBranch: t.from.branchId, toBranch: t.to.branchId, quantity: 9999 }); ok('oversized transfer rejected', false); } catch (e) { ok('oversized transfer rejected', e.isToolError, e.message); }
 r = await inv('create_stock_transfer_request', { product: t.productId, fromBranch: t.from.branchName, toBranch: t.to.branchName, quantity: t.quantity });
