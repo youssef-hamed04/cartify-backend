@@ -13,7 +13,8 @@
     "test:inventory": "node tests/inventory.workflow.mjs",
     "test:ai-tools": "node tests/ai.tools.mjs",
     "test:agents": "node tests/ai.agents.mjs && node tests/ai.mobileClient.mjs",
-    "test:ai-live": "node tests/ai.live.mjs"
+    "test:ai-live": "node tests/ai.live.mjs",
+    "db:copy": "node db/copyDatabase.js"
   },
   "engines": {
     "node": ">=18.x"

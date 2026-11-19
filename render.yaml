@@ -1,0 +1,67 @@
+# Render Blueprint: the Cartify API and the forecasting ai-service, both on the free plan.
+# Render dashboard → New → Blueprint → pick this repo. Values marked `sync: false` are asked for
+# once in the dashboard (secrets never live in this file).
+services:
+  - type: web
+    name: cartify-api
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TRUST_PROXY
+        value: "1"
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      # The local AI assistant (Ollama) does not run on free hosting: Ask Cartify shows "not available".
+      - key: OLLAMA_WARMUP
+        value: "off"
+      - key: AI_SERVICE_TIMEOUT_MS
+        value: "180000"
+      - key: AI_SERVICE_KEY
+        fromService:
+          type: web
+          name: cartify-ai
+          envVarKey: AI_SERVICE_KEY
+      - key: AI_SERVICE_URL        # https://cartify-ai-xxxx.onrender.com
+        sync: false
+      - key: ALLOWED_ORIGINS       # the Vercel site, e.g. https://cartify-xxxx.vercel.app
+        sync: false
+      - key: DB_URL                # MongoDB Atlas connection string
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DEVICE_API_KEY        # must match the SmartBox (ESP32) firmware
+        sync: false
+      - key: EMAIL_SENDER
+        sync: false
+      - key: EMAIL_SENDER_PASSWORD
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+
+  - type: web
+    name: cartify-ai
+    runtime: python
+    plan: free
+    region: frankfurt
+    rootDir: ai-service
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.14.2
+      - key: AI_SERVICE_KEY
+        generateValue: true
+      # Prophet needs more memory and time than the free plan gives; the other models still run.
+      - key: FORECAST_PROPHET
+        value: "off"

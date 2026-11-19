@@ -30,6 +30,10 @@ import { startSnapshotSchedule } from './src/modules/inventory/snapshot.service.
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Behind a hosting proxy (Render, Vercel rewrites) req.ip must come from X-Forwarded-For.
+// TRUST_PROXY = number of proxy hops to trust (Render: 1). Unset locally.
+if (process.env.TRUST_PROXY) app.set('trust proxy', Number(process.env.TRUST_PROXY) || process.env.TRUST_PROXY);
+
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,http://localhost:5500,http://127.0.0.1:5500')
   .split(',').map(o => o.trim());
 
