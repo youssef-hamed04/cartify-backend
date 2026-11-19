@@ -1,0 +1,35 @@
+import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
+import { protectRoute, requireAuth, adminOnly } from '../../middleware/auth.js';
+import { validate, mongoIdParam } from '../../middleware/validation.js';
+import { multerCloud } from '../../middleware/multer.js';
+import * as rules from './realestate.validation.js';
+import * as controller from './realestate.controller.js';
+import { AppError } from '../../utils/error.js';
+
+const router = Router();
+const upload = multerCloud().array('images', 8);
+const id = [...mongoIdParam('id'), validate];
+const estimateLimiter = rateLimit({ windowMs: 10 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false });
+router.use(protectRoute);
+router.get('/locations', controller.locations);
+router.post('/estimate', estimateLimiter, rules.featureRules(), validate, controller.estimate);
+router.get('/market', rules.listingTypeRule, validate, controller.market);
+router.get('/properties', rules.listRules, validate, controller.properties);
+router.get('/my-properties', requireAuth, rules.paginationRules, validate, controller.mine);
+router.get('/admin/properties', adminOnly, rules.adminRules, validate, controller.adminProperties);
+router.patch('/admin/properties/:id/review', adminOnly, id, rules.reviewRules, validate, controller.review);
+router.get('/admin/stats', adminOnly, controller.stats);
+router.post('/admin/model/train', adminOnly, controller.train);
+router.get('/admin/model', adminOnly, controller.model);
+router.post('/properties', requireAuth, upload, rules.normalizeMultipart, rules.propertyRules(), validate, controller.create);
+router.patch('/properties/:id/status', requireAuth, id, rules.statusRules, validate, controller.changeStatus);
+router.get('/properties/:id', id, controller.detail);
+router.patch('/properties/:id', requireAuth, id, upload, rules.normalizeMultipart, rules.propertyRules(true), validate, controller.update);
+router.delete('/properties/:id', requireAuth, id, controller.remove);
+router.use((error, req, res, next) => {
+  if (error.name === 'VersionError') return next(new AppError('Property changed during this request; reload and retry', 409));
+  if (error.name === 'MulterError') return next(new AppError(error.message, 400));
+  next(error);
+});
+export default router;

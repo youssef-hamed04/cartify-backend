@@ -99,3 +99,12 @@ at every horizon and is not used by the service (see [EVALUATION.md](EVALUATION.
 ```bash
 cd ai-service && .venv/bin/python -m unittest discover -s tests
 ```
+
+
+## Real estate (Dakahlia)
+
+Run `npm run seed:real-estate` from the backend root to prepare **synthetic demo data, not official market figures** (requires an admin). The AI service never accesses MongoDB. The backend sends rows and an `asOf` timestamp to `POST /realestate/train`; `POST /realestate/estimate` accepts property features, and `GET /realestate/status` returns trained-type metrics. All three endpoints use `require_key` / `X-AI-Service-Key`; configure `AI_SERVICE_KEY` on both services. An untrained listing type returns 409 with `detail: "model not trained"`.
+
+Sale and monthly rent have separate models. A ColumnTransformer one-hot encodes city/district/type/finishing/view with unknown categories ignored, logs area, and scales numerical features including monthsAgo. Each Pipeline regresses log(pricePerM2). Ridge, RandomForestRegressor, HistGradientBoostingRegressor, and XGBRegressor are evaluated against the newest 15% of records; the lowest price-per-square-metre MAPE wins and is refit on all rows. MAE is EGP/m?, MAPE is a fraction (0.12 = 12%), and R2 is dimensionless. At least 20 rows per supplied type are required. The estimate range uses hold-out actual/predicted ratio quantiles (10%, 90%), not a guaranteed confidence interval. Estimates use monthsAgo=0.
+
+Artifacts are atomically saved to ignored `models/realestate-sale.joblib` and `models/realestate-rent.joblib` and loaded when the application starts. Retrain through the backend admin endpoint after data changes. Run `.venv/Scripts/python -m unittest discover -s tests` here; real-estate tests invoke the pure Node demo generator and persist only to a temporary directory, without MongoDB or servers.

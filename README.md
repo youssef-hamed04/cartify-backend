@@ -591,3 +591,19 @@ cartify-backend/
 ## License
 
 MIT
+
+
+## Real estate (Dakahlia)
+
+`npm run seed:real-estate` replaces only synthetic/demo records with 6,000 market observations and 30 approved demo properties (requires an existing admin). `npm run seed:real-estate -- --clean` removes only demo data. This data is **synthetic demonstration data, not official prices or real offers**. The generator accepts an explicit seed and as-of date for reproducibility.
+
+All backend routes start with `/real-estate`:
+- Public: `GET /locations`, `POST /estimate` (30 requests / 10 minutes / IP), `GET /market?listingType=sale|rent`, `GET /properties`, `GET /properties/:id`.
+- Signed in: `POST /properties`, `GET /my-properties`, `PATCH /properties/:id`, `PATCH /properties/:id/status`, `DELETE /properties/:id`. Only owners can edit or set sold/rented/archived; admins can also delete. Contact numbers are hidden from anonymous responses.
+- Admin: `GET /admin/properties`, `PATCH /admin/properties/:id/review`, `GET /admin/stats`, `POST /admin/model/train`, `GET /admin/model`.
+
+Listings accept JSON or multipart fields with up to eight `images`. Multipart `amenities` and `removeImages` are JSON arrays; removal uses Cloudinary public IDs. Required fields: title, listingType, propertyType, city, district, area, price, contactPhone. Optional features default to zero rooms/bathrooms/floor/age, no elevator/furniture, none finishing, street view. Edits return listings to pending review. Approve/reject uses `{action:"approve"}` or `{action:"reject",reason:"..."}`. Status changes accept `{status:"sold"|"rented"|"archived"}` from approved listings only.
+
+Property filters: listingType, propertyType, city, district, minPrice/maxPrice, minArea/maxArea, rooms (minimum), finishing, q (title), sort (newest, price_asc, price_desc, area_desc, best_deal), page, limit (up to 50). Market summaries cover six months and are cached for ten minutes. Locations and market responses include the demo `dataNote`.
+
+Set `AI_SERVICE_URL` (default `http://127.0.0.1:8001`) and matching `AI_SERVICE_KEY`. Models train on first use if missing, or through the admin train route; subsequent market changes require retraining to refresh the model. Approved/sold/rented non-demo listings supplement synthetic market rows without duplicates. Sold/rented transitions upsert market records. AI network failures use trend-adjusted median comparables (district/type, district, then city); no comparable data returns 503. Sale estimates are total EGP; rent estimates are monthly EGP. `low`/`high` are total amounts, and `diffPercent` is a percentage relative to the estimate. Demo properties are excluded from listing-derived training rows because their source observations are already present.
