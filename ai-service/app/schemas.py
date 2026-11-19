@@ -57,3 +57,41 @@ class ForecastRequest(BaseModel):
             if end != self.asOf:
                 raise ValueError(f"series {s.key} ends on {end}, expected asOf {self.asOf}")
         return self
+
+
+# Real estate requests are private to the Node backend.
+from datetime import datetime, timezone
+from typing import Literal
+
+class RealEstateEstimateRequest(BaseModel):
+    listingType: Literal["sale", "rent"]
+    propertyType: Literal["apartment", "studio", "duplex", "penthouse", "villa", "chalet", "shop", "office", "land"]
+    city: str = Field(min_length=1, max_length=80)
+    district: str = Field(min_length=1, max_length=80)
+    area: float = Field(ge=15, le=5000, allow_inf_nan=False)
+    rooms: int = Field(default=0, ge=0, le=20)
+    bathrooms: int = Field(default=0, ge=0, le=10)
+    floor: int = Field(default=0, ge=-1, le=60)
+    hasElevator: bool = False
+    buildingAge: float = Field(default=0, ge=0, le=80, allow_inf_nan=False)
+    finishing: Literal["none", "semi", "super-lux", "ultra-lux"] = "none"
+    furnished: bool = False
+    view: Literal["street", "garden", "nile", "sea"] = "street"
+
+class RealEstateRow(RealEstateEstimateRequest):
+    pricePerM2: float = Field(gt=0, allow_inf_nan=False)
+    transactionDate: datetime
+
+class RealEstateTrainRequest(BaseModel):
+    rows: list[RealEstateRow] = Field(min_length=20, max_length=100000)
+    asOf: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @model_validator(mode="after")
+    def no_future_rows(self):
+        as_of = self.asOf.replace(tzinfo=timezone.utc) if self.asOf.tzinfo is None else self.asOf
+        for row in self.rows:
+            dt = row.transactionDate
+            dt = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+            if dt > as_of:
+                raise ValueError("transactionDate cannot be after asOf")
+        return self
