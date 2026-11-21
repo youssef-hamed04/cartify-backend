@@ -48,3 +48,27 @@ def forecast(req: ForecastRequest) -> dict:
                  h["status"])
     log.info("forecast done in %d ms", out["durationMs"])
     return out
+
+
+from . import realestate
+from .schemas import RealEstateTrainRequest, RealEstateEstimateRequest
+
+realestate.load_models()
+
+@app.post("/realestate/train", dependencies=[Depends(require_key)])
+def realestate_train(req: RealEstateTrainRequest) -> dict:
+    try:
+        return realestate.train(req)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+@app.post("/realestate/estimate", dependencies=[Depends(require_key)])
+def realestate_estimate(req: RealEstateEstimateRequest) -> dict:
+    try:
+        return realestate.estimate(req)
+    except LookupError as exc:
+        raise HTTPException(status_code=409, detail="model not trained") from exc
+
+@app.get("/realestate/status", dependencies=[Depends(require_key)])
+def realestate_status() -> dict:
+    return realestate.status()

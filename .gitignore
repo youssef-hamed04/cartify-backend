@@ -9,3 +9,5 @@ ai-service/.venv/
 __pycache__/
 *.pyc
 forecast-dataset.json
+
+ai-service/models/
