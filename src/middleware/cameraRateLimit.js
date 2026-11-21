@@ -12,6 +12,16 @@ export const imageUploadLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// /returns/validate-code — 10 code attempts per box per minute (slows down guessing)
+export const codeCheckLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  keyGenerator: byBox,
+  message: { msg: 'error', err: 'Too many code attempts from this box. Wait a minute.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // /users/otp/request — max 5 codes per email+IP every 15 minutes
 export const otpRequestLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,

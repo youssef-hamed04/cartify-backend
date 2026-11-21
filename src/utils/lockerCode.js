@@ -1,108 +1,36 @@
+// SmartBox unlock code. The backend shows it to the customer; the box (Arduino) checks it at the
+// keypad on its own, without internet. Both sides must use exactly the same formula:
+//
+//   code = ((lockerUserId + dayOfMonth) % 10000) + SECRET
+//
+// dayOfMonth comes from the box's RTC, which is set to Egypt local time, so the server uses
+// the same time zone. SECRET must equal SECRET_KEY in the Arduino sketch (LOCKER_CODE_SECRET in .env).
+// The code changes every day at midnight Egypt time. See docs/SMARTBOX_INTEGRATION.md.
 
-const SECRET_KEY = 1468;
+const SECRET = Number(process.env.LOCKER_CODE_SECRET) || 7257;
+const TIME_ZONE = process.env.LOCKER_TIME_ZONE || 'Africa/Cairo';
 
-/**
- * format: DDMM (ex: 13 June → 1306)
- */
-export function getDayCode(date = new Date()) {
-  const day = String(date.getUTCDate()).padStart(2, '0');
-  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-  console.log("day", day);
+const dayFormat = new Intl.DateTimeFormat('en-GB', { timeZone: TIME_ZONE, day: 'numeric' });
 
-  return parseInt(day); // 1306
-
+// Day of the month (1–31) in the box's time zone
+export function dayOfMonth(date = new Date()) {
+  return Number(dayFormat.format(date));
 }
-// 13
+
 export function generateLockerCode(userId, date = new Date()) {
-  const n = Number(userId);
-  const day = getDayCode(date);
-
-
-  return n + SECRET_KEY + day; // For testing only (no modulo, no offset)
+  return ((Number(userId) + dayOfMonth(date)) % 10000) + SECRET;
 }
 
-
-// Accept today's code, then yesterday's (codes rotate daily but returns live 48h)
+// Used by the online check (/returns/validate-code). Accepts today's code and yesterday's,
+// so a customer who opened the app just before midnight is not locked out.
 export function validateLockerCode(userId, enteredCode, date = new Date()) {
   const yesterday = new Date(date.getTime() - 24 * 60 * 60 * 1000);
   return [date, yesterday].some(
-    (d) => String(enteredCode).trim() === String(generateLockerCode(userId, d))
+    (day) => String(enteredCode).trim() === String(generateLockerCode(userId, day))
   );
 }
 
-
+// 3-digit ID the customer types on the keypad before the code
 export function generateLockerUserId() {
   return String(Math.floor(100 + Math.random() * 900));
 }
-
-
-
-
-
-// #include < Wire.h >
-//   #include "RTClib.h"
-
-// RTC_DS3231 rtc;
-
-// // نفس السر اللي في السيرفر
-// const long SECRET_KEY = 146818;
-
-// // تحويل التاريخ إلى رقم (DDMM)
-// int getDayCode(int day, int month) {
-//   return (day * 100) + month;
-// }
-
-// // نفس المعادلة بتاعة السيرفر
-// int generateLockerCode(long userId, int day, int month) {
-//   long dayCode = getDayCode(day, month);
-
-//   long raw = ((userId ^ SECRET_KEY) + dayCode) % 9000;
-
-//   return (raw + 1000);
-// }
-
-// void setup() {
-//   Serial.begin(9600);
-
-//   if (!rtc.begin()) {
-//     Serial.println("RTC not found");
-//     while (1);
-//   }
-
-//   // لو الساعة مش متظبطة أول مرة فقط
-//   // rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-
-//   Serial.println("System Ready");
-// }
-
-// void loop() {
-
-//   // مثال: إدخال يدوي (بدل keypad / serial / RFID)
-//   long userId = 567564;
-//   int enteredCode = 2696;
-
-//   DateTime now = rtc.now();
-
-//   int day = now.day();
-//   int month = now.month();
-
-//   int expectedCode = generateLockerCode(userId, day, month);
-
-//   Serial.print("Today: ");
-//   Serial.print(day);
-//   Serial.print("/");
-//   Serial.println(month);
-
-//   Serial.print("Expected Code: ");
-//   Serial.println(expectedCode);
-
-//   if (enteredCode == expectedCode) {
-//     Serial.println("ACCESS GRANTED - OPEN LOCKER");
-//     // digitalWrite(RELAY_PIN, HIGH);
-//   } else {
-//     Serial.println("ACCESS DENIED");
-//     // digitalWrite(RELAY_PIN, LOW);
-//   }
-
-//   delay(5000); // إعادة المحاولة كل 5 ثواني
-// }
