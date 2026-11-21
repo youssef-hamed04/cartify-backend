@@ -84,7 +84,37 @@ code = ((ID + اليوم من الشهر) % 10000) + 7257
 - السرعة على الناحيتين `9600`.
 - الأفضل تغذّي الـ ESP32-CAM من مصدر 5V منفصل (500mA على الأقل) مع GND مشترك؛ الواي فاي والفلاش بيسحبوا تيار عالي.
 
-## ٤. كود الـ ESP32-CAM (بوردة AI Thinker)
+## ٤. كود الـ ESP32-CAM
+
+### لو معاك الكود الحالي (اللي بيقرا `ID:` و`WEIGHT:` و`CAPTURE`): 3 تعديلات بس
+
+**أ) عنوان السيرفر:** السيرفر بقى على اللابتوب، مش على Vercel:
+```cpp
+const char* serverUrl = "http://192.168.1.157:3001/camera/upload";   // IP اللابتوب على الشبكة
+```
+
+**ب) في `loop()`، جوه `CAPTURE`: متطلبش `next-return`**، الـ ID جاي من الأردوينو خلاص:
+```cpp
+    else if (msg == "CAPTURE") {
+      if (currentID == "") {
+        Serial.println("No ID received from Arduino");
+        return;
+      }
+      sendImage();
+      currentID = "";
+    }
+```
+(تقدر تمسح دالة `getNextReturnId()` و`#include <ArduinoJson.h>`، مبقوش مستخدمين.)
+
+**ج) في `sendImage()`: ابعت الـ ID اللي اتكتب على الكيباد** بدل `X-Return-Id`:
+```cpp
+  http.addHeader("X-Locker-User-Id", currentID);
+```
+وامسح سطر `http.addHeader("X-Return-Id", currentID);`.
+
+الباقي (الكاميرا وتحويل الصورة لـ JPEG والهيدرز التانية) زي ما هو.
+
+### أو كود كامل من الأول (بوردة AI Thinker)
 
 غيّر القيم اللي في أول الكود بس. المفتاح `DEVICE_KEY` لازم يبقى نفس قيمة `DEVICE_API_KEY` في ملف `.env` بتاع الباك إند (خده من صاحب الباك إند، ومترفعهوش على GitHub).
 
