@@ -41,10 +41,11 @@ export const createReturn = asyncHandler(async (req, res, next) => {
 
   const expiresAt = new Date(Date.now() + CODE_TTL_MS);
 
-  const existingReturn = await returnModel.findOne({
-    orderId,
-    status: 'pending',
-  });
+  // Add to the open return of the same order. Without an orderId there is nothing to match on:
+  // a { orderId: undefined } filter would merge into anyone's open return that has no order.
+  const existingReturn = orderId
+    ? await returnModel.findOne({ orderId, status: 'pending' })
+    : null;
   if (existingReturn) {
     existingReturn.items.push(...items);
 
@@ -186,7 +187,7 @@ export const getAllReturns = asyncHandler(async (req, res) => {
   });
 });
 
-// ── POST /returns/validate-code (used by locker hardware validation endpoint) ─
+// ── POST /returns/validate-code (SmartBox; device key checked by deviceAuth) ──
 export const validateReturnCode = asyncHandler(async (req, res, next) => {
   await connectToDB();
   const { lockerUserId, unlockCode } = req.body;
@@ -208,12 +209,14 @@ export const validateReturnCode = asyncHandler(async (req, res, next) => {
   const valid = validateLockerCode(lockerUserId, String(unlockCode));
   if (!valid) return sendSuccess(res, 200, 'success', { action: 'deny' });
 
-  // Mark completed
+  // The door opens now: mark the return completed and remember which box opened it.
+  // The box then uploads its photo for this returnId (accepted for a few minutes, see /camera/upload).
   returnRequest.status = 'completed';
   returnRequest.completedAt = new Date();
+  returnRequest.processedByBox = req.boxId;
   await returnRequest.save();
 
-  sendSuccess(res, 200, 'success', { action: 'open' });
+  sendSuccess(res, 200, 'success', { action: 'open', returnId: returnRequest._id });
 });
 
 // ── PATCH /returns/:id (admin — manual status override) ───────────────────────

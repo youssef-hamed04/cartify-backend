@@ -9,6 +9,7 @@
  *   DELETE /camera/session/:id       — admin: delete session + Cloudinary asset
  */
 
+import mongoose from 'mongoose';
 import cameraSessionModel from '../../../db/models/cameraSession.model.js';
 import returnModel from '../../../db/models/return.model.js';
 import connectToDB from '../../../db/connectionDB.js';
@@ -17,6 +18,40 @@ import { sendSuccess } from '../../utils/response.js';
 import { uploadImageToCloud, deleteImageFromCloud } from '../../utils/imageUpload.js';
 import { handleImageUpload } from '../../middleware/imagesMulter.js'
 import { failedVerification, isVerificationEnabled, verifyReturnDrop } from '../../utils/returnVerification.js';
+
+// Once a return is completed (door opened / first photo stored), the same box may still send
+// photos for it for this long, e.g. a retry (CAMERA_UPLOAD_WINDOW_MIN in .env, default 15 minutes).
+const uploadWindowMs = () => (parseInt(process.env.CAMERA_UPLOAD_WINDOW_MIN, 10) || 15) * 60 * 1000;
+
+// The return a box photo belongs to: by returnId, or by the locker ID the customer typed on the
+// keypad (the newest open return with that ID, or one this box completed a few minutes ago).
+const findReturnForUpload = ({ returnId, lockerUserId, boxId }) => {
+  if (returnId) return returnModel.findById(returnId);
+  return returnModel
+    .findOne({
+      lockerUserId: String(lockerUserId).trim(),
+      $or: [
+        { status: 'pending', expiresAt: { $gt: new Date() } },
+        { status: 'completed', processedByBox: boxId, completedAt: { $gte: new Date(Date.now() - uploadWindowMs()) } },
+      ],
+    })
+    .sort({ createdAt: -1 });
+};
+
+// Why a photo can't be attached to this return, or null when it can.
+const uploadRefusal = (returnDoc, boxId) => {
+  if (returnDoc.status === 'pending') {
+    return returnDoc.expiresAt < new Date() ? 'This return has expired' : null;
+  }
+  if (returnDoc.status !== 'completed') return `Cannot attach image — return status is "${returnDoc.status}"`;
+  if (returnDoc.processedByBox && returnDoc.processedByBox !== boxId) {
+    return 'This return was opened at a different box';
+  }
+  if (!returnDoc.completedAt || Date.now() - returnDoc.completedAt.getTime() > uploadWindowMs()) {
+    return 'The photo window for this return has closed';
+  }
+  return null;
+};
 
 // Runs the weight + image check and stores the verdict on the session and its return
 const runVerification = async (session, returnDoc, imageBuffer, measuredWeight) => {
@@ -37,25 +72,24 @@ const runVerification = async (session, returnDoc, imageBuffer, measuredWeight) 
 
 // ── POST /camera/upload ───────────────────────────────────────────────────────
 /**
- * ESP32-CAM sends a JPEG image via multipart/form-data.
+ * The ESP32-CAM sends the photo it took after the box detected the item on the scale.
+ * Full description for the firmware: docs/SMARTBOX_INTEGRATION.md.
  *
- * Expected fields:
- *   image          (file, required)  — JPEG captured by the camera
- *   returnId       (text, required)  — MongoDB ObjectId of the return request
- *   firmwareVersion (text, optional) — e.g. "1.0.3", for diagnostics
+ * Headers: X-Device-Key, X-Box-Id (checked by deviceAuth), X-Weight (grams, optional).
+ * Which return: X-Locker-User-Id (the ID typed on the keypad) or X-Return-Id.
  *
- * The firmware in the provided code sends:
- *   Content-Type: image/jpeg   (raw POST body, not multipart)
+ * Two body formats:
+ *   - raw image/jpeg body; IDs in the headers above, firmware in X-Firmware-Version
+ *   - multipart/form-data: file field "image", text fields lockerUserId / returnId / firmwareVersion
  *
- * We support BOTH:
- *   - multipart/form-data with field name "image"  (preferred, carries returnId)
- *   - raw image/jpeg body                           (legacy, returnId from header)
+ * The first photo for an open return marks it completed (the item is in the box).
  */
 export const uploadImage = asyncHandler(async (req, res, next) => {
   await connectToDB();
 
   let imageBuffer;
   let returnId;
+  let lockerUserId;
   let firmwareVersion;
 
   const contentType = req.headers['content-type'] || '';
@@ -72,12 +106,14 @@ export const uploadImage = asyncHandler(async (req, res, next) => {
 
     imageBuffer = req.file.buffer;
     returnId = req.body.returnId;
+    lockerUserId = req.body.lockerUserId;
     firmwareVersion = req.body.firmwareVersion || null;
 
   } else if (contentType.includes('image/jpeg') || contentType.includes('image/jpg')) {
     // ── Raw JPEG body (matches original ESP32 firmware exactly) ──────────────
     imageBuffer = req.body;   // raw Buffer when express.raw() is applied to this route
     returnId = req.headers['x-return-id'];
+    lockerUserId = req.headers['x-locker-user-id'];
     firmwareVersion = req.headers['x-firmware-version'] || null;
 
     if (!imageBuffer || imageBuffer.length === 0) {
@@ -97,14 +133,20 @@ export const uploadImage = asyncHandler(async (req, res, next) => {
 
   const boxId = req.boxId;
 
-  // ── Validate returnId ─────────────────────────────────────────────────────
-  if (!returnId) return next(new AppError('returnId is required (body field or X-Return-Id header)', 400));
-
-  const returnDoc = await returnModel.findById(returnId);
-  if (!returnDoc) return next(new AppError('Return request not found', 404));
-  if (returnDoc.status !== 'pending') {
-    return next(new AppError(`Cannot attach image — return status is "${returnDoc.status}"`, 409));
+  // ── Find the return ───────────────────────────────────────────────────────
+  if (!returnId && !lockerUserId) {
+    return next(new AppError('Send X-Locker-User-Id (the ID typed on the keypad) or X-Return-Id', 400));
   }
+  if (returnId && !mongoose.isValidObjectId(returnId)) return next(new AppError('Invalid return ID', 400));
+
+  const returnDoc = await findReturnForUpload({ returnId, lockerUserId, boxId });
+  if (!returnDoc) {
+    return next(new AppError(returnId ? 'Return request not found' : 'No open return for this locker ID', 404));
+  }
+  const refusal = uploadRefusal(returnDoc, boxId);
+  if (refusal) return next(new AppError(refusal, 409));
+  returnId = String(returnDoc._id);
+  const completesReturn = returnDoc.status === 'pending';
 
   // ── Create session document ───────────────────────────────────────────────
   const attemptNumber = await cameraSessionModel.countDocuments({ returnId }) + 1;
@@ -142,6 +184,8 @@ export const uploadImage = asyncHandler(async (req, res, next) => {
   await session.save();
 
   // ── Attach image to return document ──────────────────────────────────────
+  // The box only sends a photo after the item was detected on the scale, so the first photo
+  // for an open return also completes it (the box checks the code offline and can't report it).
   await returnModel.findByIdAndUpdate(returnId, {
     $set: {
       imageUrl: cloudResult.url,
@@ -149,11 +193,13 @@ export const uploadImage = asyncHandler(async (req, res, next) => {
       imageUploadedAt: new Date(),
       weight: weight ? Number(weight) : null,
       verification: isVerificationEnabled() ? { verdict: 'processing', reasons: [] } : null,
+      ...(completesReturn ? { status: 'completed', completedAt: new Date(), processedByBox: boxId } : {}),
     },
   });
 
   sendSuccess(res, 200, 'success', {
     sessionId: session._id,
+    returnId,
     imageUrl: cloudResult.url,
   });
 
@@ -257,23 +303,21 @@ export const deleteSession = asyncHandler(async (req, res, next) => {
 
 
 
-export const getNextReturn = async (req, res) => {
+// ── GET /camera/next-return (SmartBox) ────────────────────────────────────────
+// The return this box opened most recently, while its photo window is still open.
+// /returns/validate-code already sends the returnId; this is a fallback if the box lost it.
+export const getNextReturn = asyncHandler(async (req, res) => {
   await connectToDB();
-  const { boxId } = req.query;
-
-  if (!boxId) {
-    return res.status(400).json({ msg: 'boxId required' });
-  }
-
   const nextReturn = await returnModel
-    .findOne({ status: 'pending' })
-    .sort({ createdAt: 1 });
+    .findOne({
+      processedByBox: req.boxId,
+      status: 'completed',
+      completedAt: { $gte: new Date(Date.now() - uploadWindowMs()) },
+    })
+    .sort({ completedAt: -1 });
 
   if (!nextReturn) {
-    return res.status(404).json({ msg: 'No pending returns' });
+    return res.status(404).json({ msg: 'No return is waiting for a photo at this box' });
   }
-
-  res.status(200).json({
-    returnId: nextReturn._id
-  });
-};
+  res.status(200).json({ returnId: nextReturn._id });
+});
