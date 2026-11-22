@@ -1,6 +1,13 @@
-# Render Blueprint: the Cartify API and the forecasting ai-service, both on the free plan.
+# Render Blueprint: the Cartify API on the free plan, without the AI services (test deployment).
 # Render dashboard → New → Blueprint → pick this repo. Values marked `sync: false` are asked for
 # once in the dashboard (secrets never live in this file).
+#
+# What is off in this deployment, and what still works:
+#   - Ask Cartify (Ollama LLM): not available on free hosting; the chat says so.
+#   - Demand forecasting (ai-service): not deployed; the forecasting page shows the service as unreachable.
+#   - SmartBox photo check (CLIP): AI_VERIFY=off (512 MB RAM is not enough); photos are still stored.
+#   - Real estate price estimates still work: without the ai-service they come from comparable records.
+# To add the forecasting service later, see the cartify-ai example at the end of this file.
 services:
   - type: web
     name: cartify-api
@@ -17,18 +24,10 @@ services:
         value: "1"
       - key: JWT_EXPIRES_IN
         value: 7d
-      # The local AI assistant (Ollama) does not run on free hosting: Ask Cartify shows "not available".
       - key: OLLAMA_WARMUP
         value: "off"
-      - key: AI_SERVICE_TIMEOUT_MS
-        value: "180000"
-      - key: AI_SERVICE_KEY
-        fromService:
-          type: web
-          name: cartify-ai
-          envVarKey: AI_SERVICE_KEY
-      - key: AI_SERVICE_URL        # https://cartify-ai-xxxx.onrender.com
-        sync: false
+      - key: AI_VERIFY
+        value: "off"
       - key: ALLOWED_ORIGINS       # the Vercel site, e.g. https://cartify-xxxx.vercel.app
         sync: false
       - key: DB_URL                # MongoDB Atlas connection string
@@ -48,20 +47,20 @@ services:
       - key: CLOUDINARY_API_SECRET
         sync: false
 
-  - type: web
-    name: cartify-ai
-    runtime: python
-    plan: free
-    region: frankfurt
-    rootDir: ai-service
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /health
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.14.2
-      - key: AI_SERVICE_KEY
-        generateValue: true
-      # Prophet needs more memory and time than the free plan gives; the other models still run.
-      - key: FORECAST_PROPHET
-        value: "off"
+# Forecasting service (optional), add under `services:` and set AI_SERVICE_URL / AI_SERVICE_KEY on cartify-api:
+#  - type: web
+#    name: cartify-ai
+#    runtime: python
+#    plan: free
+#    region: frankfurt
+#    rootDir: ai-service
+#    buildCommand: pip install -r requirements.txt
+#    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+#    healthCheckPath: /health
+#    envVars:
+#      - key: PYTHON_VERSION
+#        value: 3.14.2
+#      - key: AI_SERVICE_KEY
+#        generateValue: true
+#      - key: FORECAST_PROPHET     # Prophet needs more memory than the free plan gives
+#        value: "off"
