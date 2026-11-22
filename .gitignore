@@ -12,3 +12,6 @@ forecast-dataset.json
 
 ai-service/models/
 .vercel
+
+.vercel
+.env*

@@ -1,5 +1,13 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "installCommand": "npm ci --omit=optional",
+  "services": {
+    "api": {
+      "root": ".",
+      "framework": "express",
+      "entrypoint": "index.js",
+      "installCommand": "npm ci --omit=optional"
+    }
+  },
+  "rewrites": [{ "source": "/(.*)", "destination": { "service": "api" } }],
   "regions": ["fra1"]
 }

@@ -1,0 +1,7 @@
+# Not needed by the API on Vercel
+ai-service/
+tests/
+docs/
+uploads/
+.cache/
+*.log
