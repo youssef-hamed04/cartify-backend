@@ -11,3 +11,4 @@ __pycache__/
 forecast-dataset.json
 
 ai-service/models/
+.vercel

@@ -12,7 +12,6 @@
  * The verdict is advisory ("match" or "review"); an admin still decides on refunds.
  * Set AI_VERIFY=off to disable. The model (~240 MB) downloads once into .cache/models.
  */
-import { env, pipeline, AutoProcessor, CLIPVisionModelWithProjection, RawImage } from '@huggingface/transformers';
 import imageEmbeddingModel from '../../db/models/imageEmbedding.model.js';
 import productModel from '../../db/models/product.model.js';
 
@@ -28,13 +27,23 @@ const WEIGHT_TOLERANCE = 0.2;     // ±20 %…
 const WEIGHT_MIN_TOLERANCE = 25;  // …but never tighter than ±25 g (sensor noise, packaging)
 const GENERIC_DISTRACTORS = ['an empty box', "a person's hand", 'a crumpled piece of paper'];
 
-env.cacheDir = process.env.AI_MODEL_CACHE || './.cache/models';
-
 export const isVerificationEnabled = () => process.env.AI_VERIFY !== 'off';
+
+// The library (and its ~430 MB ONNX runtime) is loaded on first use only, so a server with
+// AI_VERIFY=off starts, and can be deployed (e.g. on Vercel), without installing it.
+let transformersPromise = null;
+const transformers = () => {
+  transformersPromise ??= import('@huggingface/transformers').then((lib) => {
+    lib.env.cacheDir = process.env.AI_MODEL_CACHE || './.cache/models';
+    return lib;
+  });
+  return transformersPromise;
+};
 
 let classifierPromise = null;
 const getClassifier = () => {
-  classifierPromise ??= pipeline('zero-shot-image-classification', MODEL, { dtype: 'q8' }).catch((err) => {
+  classifierPromise ??= transformers().then(({ pipeline }) =>
+    pipeline('zero-shot-image-classification', MODEL, { dtype: 'q8' })).catch((err) => {
     classifierPromise = null; // allow a retry on the next drop-off
     throw err;
   });
@@ -43,10 +52,10 @@ const getClassifier = () => {
 
 let visionPromise = null;
 const getVision = () => {
-  visionPromise ??= Promise.all([
+  visionPromise ??= transformers().then(({ AutoProcessor, CLIPVisionModelWithProjection }) => Promise.all([
     AutoProcessor.from_pretrained(MODEL),
     CLIPVisionModelWithProjection.from_pretrained(MODEL, { dtype: 'q8' }),
-  ]).catch((err) => {
+  ])).catch((err) => {
     visionPromise = null;
     throw err;
   });
@@ -70,6 +79,7 @@ const embeddingForUrl = (url) => {
     const job = (async () => {
       const cached = await imageEmbeddingModel.findOne({ url, model: MODEL }).select('vector').lean();
       if (cached) return cached.vector;
+      const { RawImage } = await transformers();
       const vector = await embedImage(await RawImage.fromURL(url));
       await imageEmbeddingModel.updateOne({ url, model: MODEL }, { vector }, { upsert: true });
       return vector;
@@ -235,6 +245,7 @@ export async function verifyReturnDrop({ imageBuffer, measuredWeight, items }) {
   const labels = [...expected, ...(await distractorLabels(products))];
 
   const classifier = await getClassifier();
+  const { RawImage } = await transformers();
   const image = await RawImage.fromBlob(new Blob([imageBuffer]));
   const [ranked, boxVector] = await Promise.all([
     classifier(image, labels, { hypothesis_template: 'a photo of {}' }),
